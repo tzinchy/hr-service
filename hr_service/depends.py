@@ -6,8 +6,7 @@ from core.config import settings
 from aiogram import Bot
 import asyncio
 import logging
-from websockets.sync.client import connect
-from functools import lru_cache
+from frontend_auth.auth import check_auth, login, logout, admin_required, hr_admin_required, hr_user_required
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -19,7 +18,6 @@ MESSAGE_PREVIEW_LENGTH = 50  # длина превью сообщения
 
 # --- Функции работы с данными ---
 
-@st.cache_data(ttl=POLLING_INTERVAL)
 def get_all_chats_cached():
     """Получает кэшированный список всех чатов"""
     return get_all_chats()
@@ -148,38 +146,22 @@ def save_message(chat_id: int, text: str, is_from_admin: bool):
         raise
 
 def check_new_messages(chat_id: int, last_check: datetime):
-    """Проверяет наличие новых сообщений"""
+    """Проверяет наличие новых сообщений через поллинг БД"""
     try:
-        if settings.WEBSOCKET_ENABLED:
-            return check_via_websocket(chat_id)
-        return check_via_polling(chat_id, last_check)
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT EXISTS (
+                        SELECT 1 FROM comm.message 
+                        WHERE chat_id = %s 
+                        AND NOT is_from_admin 
+                        AND sent_at > %s
+                    )
+                """, (chat_id, last_check))
+                return cursor.fetchone()[0]
     except Exception as e:
         logger.error(f"Ошибка при проверке новых сообщений: {e}")
         return False
-
-def check_via_websocket(chat_id: int):
-    """Проверка новых сообщений через WebSocket"""
-    try:
-        with connect(settings.WEBSOCKET_URL) as websocket:
-            websocket.send(f"subscribe:{chat_id}")
-            message = websocket.recv(timeout=0.5)
-            return message.startswith(f"new_message:{chat_id}")
-    except:
-        return False
-
-def check_via_polling(chat_id: int, last_check: datetime):
-    """Проверка новых сообщений через поллинг БД"""
-    with get_connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("""
-                SELECT EXISTS (
-                    SELECT 1 FROM comm.message 
-                    WHERE chat_id = %s 
-                    AND NOT is_from_admin 
-                    AND sent_at > %s
-                )
-            """, (chat_id, last_check))
-            return cursor.fetchone()[0]
 
 # --- Интерфейс Streamlit ---
 
@@ -236,9 +218,15 @@ def initialize_session_state():
     if 'last_message_check' not in st.session_state:
         st.session_state.last_message_check = datetime.now()
 
+@admin_required  # Требуем права HR пользователя для доступа к чатам
 def main():
     st.set_page_config(page_title="Чат с кандидатами", layout="wide")
     st.title("💬 Чат с кандидатами")
+    
+    # Добавляем кнопку выхода в сайдбар
+    with st.sidebar:
+        if st.button("Выйти из системы"):
+            logout()
     
     initialize_session_state()
     
@@ -320,4 +308,8 @@ def main():
         st.rerun()
 
 if __name__ == "__main__":
-    main()
+    # Проверяем аутентификацию перед запуском основного кода
+    if not check_auth():
+        login()
+    else:
+        main()
