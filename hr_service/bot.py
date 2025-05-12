@@ -30,6 +30,13 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+DOCUMENT_STATUSES = {
+    1: ("Не загружен ❌"),
+    2: ("Заказан 🛒"),
+    3: ("Ожидает проверки ⏳"),
+    4: ("Проверен ✅"),
+    5: ("Отправьте еще раз🔄")
+}
 
 
 @dp.message(Command("start"))
@@ -274,8 +281,9 @@ async def cmd_docs(message: Message, state: FSMContext):
                 keyboard = []
                 for doc in documents:
                     doc_id, doc_name, status_id, template_id = doc
-                    status = "✅" if status_id == 2 else "❌"
-                    keyboard.append([KeyboardButton(text=f"{status} {doc_name}")])
+                    # Статусы документов
+                    status = DOCUMENT_STATUSES[status_id]
+                    keyboard.append([KeyboardButton(text=f"{doc_name} {status}")])
                 
                 keyboard.append([KeyboardButton(text="↩️ Назад в меню")])
                 
@@ -291,8 +299,8 @@ async def cmd_docs(message: Message, state: FSMContext):
                 response = f"📂 {first_name}, выберите документ для загрузки:\n\n"
                 for doc in documents:
                     doc_id, doc_name, status_id, _ = doc
-                    status = "✅ Загружен" if status_id == 2 else "❌ Не загружен"
-                    response += f"- {doc_name}: {status}\n"
+                    status = DOCUMENT_STATUSES[status_id]
+                    response += f"{doc_name}: {status}\n"
                 
                 await message.answer(response, reply_markup=doc_kb)
                 await save_message(chat_id, "Пользователю отображен список документов", True)

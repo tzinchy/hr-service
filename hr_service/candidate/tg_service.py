@@ -91,7 +91,6 @@ async def create_required_documents(candidate_uuid: str):
     try:
         with get_connection() as conn:
             with conn.cursor() as cursor:
-                # Проверяем, есть ли записи в таблице шаблонов
                 cursor.execute("SELECT COUNT(*) FROM hr.document_template")
                 count = cursor.fetchone()[0]
                 

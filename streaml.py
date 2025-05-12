@@ -29,11 +29,6 @@ def get_minio_client():
         secure=False
     )
 
-# Generate random alphanumeric code
-def generate_invitation_code(length=8):
-    chars = string.ascii_uppercase + string.digits
-    return ''.join(random.choice(chars) for _ in range(length))
-
 # Send email with invitation code
 def send_invitation_email(email, invitation_code):
     sender_email = os.getenv("EMAIL_SENDER")
@@ -103,7 +98,7 @@ def add_candidate(first_name, last_name, email):
                 1, 
             )
         )
-        result = cur.execute
+        result = cur.execute()
         # Create folder in MinIO
         minio_client = get_minio_client()
         create_candidate_folder(minio_client, )

@@ -9,7 +9,7 @@ import os
 # Настройки из вашего бэкенда
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 SECRET_KEY = os.getenv("SECRET_KEY")
-BASE_API_URL = "http://localhost:8000/v1/auth"
+BASE_API_URL = "http://localhost:8001/v1/auth"
 
 class UserTokenData:
     """Модель данных пользователя из токена"""
@@ -155,6 +155,9 @@ def hr_user_required(func):
 
 def hr_candidate_required(func):
     return auth_required(required_roles=[4])(func)
+
+def test_requiered(func):
+    return auth_required(required_groups=[3])(func)
 
 def get_current_user_data() -> Optional[dict]:
     """Получение всех данных из JWT токена"""

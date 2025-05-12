@@ -6,7 +6,8 @@ from core.config import settings
 from aiogram import Bot
 import asyncio
 import logging
-from frontend_auth.auth import check_auth, login, logout, admin_required, hr_admin_required, hr_user_required
+from frontend_auth.auth import check_auth, login, logout, admin_required, hr_admin_required, hr_user_required, test_requiered
+from candidate.tg_service import save_message
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
