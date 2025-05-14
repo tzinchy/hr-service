@@ -6,18 +6,58 @@ from core.config import settings
 from aiogram import Bot
 import asyncio
 import logging
+import google.generativeai as genai
 from frontend_auth.auth import check_auth, login, logout, admin_required, hr_admin_required, hr_user_required, test_requiered
 from candidate.tg_service import save_message
 
-# Настройка логирования
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Конфигурация ---
-POLLING_INTERVAL = 3  # секунды между проверками новых сообщений
-MESSAGE_PREVIEW_LENGTH = 50  # длина превью сообщения
+
+POLLING_INTERVAL = 2  
+MESSAGE_PREVIEW_LENGTH = 20  
+GEMINI_API_KEY = settings.gemini.GEMINI_TOKEN 
+
+# Инициализация Gemini
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel('gemini-2.0-flash-exp')
+
+# Системный промт для экспертного поведения
+EXPERT_PROMPT = """
+Ты - HR-эксперт высочайшего уровня с 20-летним опытом в подборе персонала. 
+Твои ответы должны быть:
+- Максимально профессиональными и точными
+- Содержать экспертные инсайты
+- Быть дружелюбными, но сохранять дистанцию
+- Использовать профессиональную лексику
+- Давать четкие и структурированные ответы
+- Учитывать контекст предыдущих сообщений
+
+Всегда отвечай как HR-гуру, к мнению которого прислушиваются. 
+Твои ответы должны демонстрировать глубочайшее понимание HR-процессов.
+Ты должен отвечать от первого лица не объясняя, что и как
+"""
 
 # --- Функции работы с данными ---
+
+def generate_expert_response(prompt: str, chat_history: list) -> str:
+    """
+    Генерирует экспертный ответ на основе истории чата
+    """
+    try:
+        # Формируем контекст из истории сообщений
+        context = EXPERT_PROMPT + "\n\nКонтекст беседы:\n"
+        for msg in chat_history[-5:]:  # Берем последние 5 сообщений для контекста
+            role = "HR" if msg[2] else "Кандидат"
+            context += f"{role}: {msg[0]}\n"
+        
+        full_prompt = f"{context}\nЭкспертный ответ HR на последнее сообщение кандидата:\n{prompt}"
+        
+        response = model.generate_content(full_prompt)
+        return response.text
+    except Exception as e:
+        logger.error(f"Ошибка генерации ответа Gemini: {e}")
+        return "Извините, возникла ошибка при генерации ответа."
 
 def get_all_chats_cached():
     """Получает кэшированный список всех чатов"""
@@ -67,7 +107,6 @@ def get_all_chats():
         logger.error(f"Ошибка при получении списка чатов: {e}")
         return pd.DataFrame()
 
-@st.cache_data(ttl=1)
 def get_chat_history_cached(chat_id: int):
     """Кэшированная версия получения истории чата"""
     return get_chat_history(chat_id)
@@ -123,28 +162,6 @@ def send_telegram_message(chat_id: int, text: str):
             await bot.session.close()
     
     asyncio.run(async_send())
-
-def save_message(chat_id: int, text: str, is_from_admin: bool):
-    """Сохраняет сообщение в базу данных"""
-    try:
-        with get_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    INSERT INTO comm.message (
-                        chat_id, content, sender_type, sent_at, is_from_admin
-                    ) VALUES (%s, %s, %s, %s, %s)
-                """, (
-                    int(chat_id),
-                    text,
-                    'admin' if is_from_admin else 'candidate',
-                    datetime.now(),
-                    is_from_admin
-                ))
-                conn.commit()
-                logger.info(f"Сообщение сохранено в БД для чата {chat_id}")
-    except Exception as e:
-        logger.error(f"Ошибка при сохранении сообщения: {e}")
-        raise
 
 def check_new_messages(chat_id: int, last_check: datetime):
     """Проверяет наличие новых сообщений через поллинг БД"""
@@ -218,8 +235,10 @@ def initialize_session_state():
         st.session_state.last_update = datetime.now()
     if 'last_message_check' not in st.session_state:
         st.session_state.last_message_check = datetime.now()
+    if 'show_ai_assistant' not in st.session_state:
+        st.session_state.show_ai_assistant = False
 
-@admin_required  # Требуем права HR пользователя для доступа к чатам
+@admin_required
 def main():
     st.set_page_config(page_title="Чат с кандидатами", layout="wide")
     st.title("💬 Чат с кандидатами")
@@ -274,6 +293,10 @@ def main():
         
         st.subheader(f"Чат с {st.session_state.candidate_name}")
         
+        # Кнопка для включения/выключения AI ассистента
+        if st.button("🤖 AI Ассистент", help="Включить/выключить помощника на основе Gemini"):
+            st.session_state.show_ai_assistant = not st.session_state.show_ai_assistant
+        
         # Проверка новых сообщений
         if (datetime.now() - st.session_state.last_message_check).seconds > POLLING_INTERVAL:
             if check_new_messages(st.session_state.selected_chat, st.session_state.last_update):
@@ -290,6 +313,46 @@ def main():
                 messages = get_chat_history_cached(st.session_state.selected_chat)
                 display_chat_messages(messages, st.session_state.candidate_name.split()[0])
         
+        # Блок AI ассистента
+        if st.session_state.show_ai_assistant:
+            # Получаем последнее сообщение от кандидата
+            last_candidate_message = next(
+                (msg[0] for msg in reversed(messages) if not msg[2]), 
+                None
+            )
+            
+            if last_candidate_message:
+                with st.expander("🔍 AI Анализ последнего сообщения"):
+                    st.write("**Последнее сообщение кандидата:**")
+                    st.info(last_candidate_message)
+                    
+                    if st.button("🎯 Сгенерировать экспертный ответ", key="generate_response"):
+                        with st.spinner("Генерация экспертного ответа..."):
+                            expert_response = generate_expert_response(
+                                last_candidate_message,
+                                messages
+                            )
+                            st.session_state.generated_response = expert_response
+                    
+                    if 'generated_response' in st.session_state:
+                        st.text_area("Экспертный ответ:", 
+                                    value=st.session_state.generated_response,
+                                    height=200)
+                        
+                        if st.button("📤 Отправить этот ответ"):
+                            try:
+                                with st.spinner("Отправка сообщения..."):
+                                    send_telegram_message(st.session_state.selected_chat, st.session_state.generated_response)
+                                    save_message(st.session_state.selected_chat, st.session_state.generated_response, True)
+                                    st.session_state.last_update = datetime.now()
+                                    st.session_state.show_ai_assistant = False
+                                    st.rerun()
+                            except Exception as e:
+                                st.error(f"Ошибка при отправке: {str(e)}")
+                                logger.error(f"Ошибка отправки сообщения: {e}")
+            else:
+                st.warning("Нет сообщений от кандидата для анализа")
+        
         # Отправка нового сообщения
         new_message = st.chat_input("Введите сообщение...", key="message_input")
         if new_message:
@@ -304,7 +367,7 @@ def main():
                 logger.error(f"Ошибка отправки сообщения: {e}")
 
     # Автообновление при долгом бездействии
-    if (datetime.now() - st.session_state.last_update).seconds > 30:
+    if (datetime.now() - st.session_state.last_update).seconds > 1:
         st.session_state.last_update = datetime.now()
         st.rerun()
 

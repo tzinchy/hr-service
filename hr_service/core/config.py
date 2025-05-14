@@ -43,6 +43,11 @@ class MinioSetting:
 @dataclass
 class TelegramBotSetting: 
     TELEGRAM_TOKEN : str = os.environ.get('TELEGRAM_TOKEN')
+
+@dataclass
+class GEMINI: 
+    GEMINI_TOKEN : str = os.environ.get('GEMINI_TOKEN')
+
 @dataclass
 class Settings:
     project_management_setting: ProjectManagementSettings = field(default_factory=ProjectManagementSettings)
@@ -50,9 +55,7 @@ class Settings:
     redis : RedisSetting = field(default_factory=RedisSetting)
     minio : MinioSetting = field(default_factory=MinioSetting)
     bot : TelegramBotSetting = field(default_factory=TelegramBotSetting)
+    gemini : GEMINI = field(default_factory=GEMINI)
 
 settings = Settings()
 print(settings.project_management_setting.DATABASE_URL)
-
-RENOVATION_FILE_PATH = './sql/renovation/'
-RECOMMENDATION_FILE_PATH = './sql/recommendation'

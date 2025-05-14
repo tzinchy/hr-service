@@ -200,3 +200,34 @@ async def process_bank_statement(file_path, candidate_uuid):
     except Exception as e:
         logger.error(f"Error processing bank statement: {e}")
         return False, f"Ошибка при обработке файла: {e}"
+    
+
+async def save_location(candidate_uuid: str, latitude: float, longitude: float, accuracy: float = None) -> bool:
+    """Сохраняет геолокацию кандидата в базу данных"""
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    INSERT INTO hr.candidate_location (
+                        candidate_uuid,
+                        latitude,
+                        longitude,
+                        accuracy
+                    ) VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (candidate_uuid) DO UPDATE
+                    SET 
+                        latitude = EXCLUDED.latitude,
+                        longitude = EXCLUDED.longitude,
+                        accuracy = EXCLUDED.accuracy,
+                        updated_at = NOW()
+                """, (
+                    candidate_uuid,
+                    latitude,
+                    longitude,
+                    accuracy
+                ))
+                conn.commit()
+                return True
+    except Exception as e:
+        logger.error(f"Error saving location: {e}")
+        return False

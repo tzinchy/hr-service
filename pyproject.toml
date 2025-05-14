@@ -20,6 +20,7 @@ dependencies = [
     "email-validator==2.2.0",
     "fastapi==0.115.8",
     "fastapi-cache2>=0.2.2",
+    "google-generativeai>=0.8.5",
     "greenlet==3.1.1",
     "h11==0.14.0",
     "idna==3.10",
