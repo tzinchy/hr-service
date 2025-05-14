@@ -10,7 +10,6 @@ from aiogram.types import (
     InlineKeyboardButton,
     ReplyKeyboardMarkup,
     KeyboardButton,
-    Location,
     BufferedInputFile
 )
 from datetime import datetime
@@ -18,7 +17,6 @@ from candidate.database import get_connection, get_minio_client
 from core.config import settings
 from candidate.tg_service import (
     is_user_authorized,
-    process_bank_statement,
     save_message,
     create_required_documents,
     get_candidate_uuid_by_chat_id,
@@ -105,6 +103,10 @@ async def update_document_status(document_id: int, new_status: int):
     except Exception as e:
         logger.error(f"Error updating document status: {e}")
         return False
+
+def is_excel_file(file_name: str) -> bool:
+    """Проверяет, является ли файл Excel"""
+    return file_name.lower().endswith(('.xlsx', '.xls'))
 
 # Обработчики команд
 @dp.message(Command("start"))
@@ -388,16 +390,21 @@ async def handle_document_selection(message: Message, state: FSMContext):
     # Создаем клавиатуру для выбора действия с документом
     buttons = []
     
-    # Всегда показываем кнопку загрузки
-    buttons.append([KeyboardButton(text="📤 Загрузить документ")])
+    # Для статусов "Не загружен" и "Требуется отправить еще раз" показываем кнопку загрузки
+    if doc_info["status_id"] in [1, 5]:
+        buttons.append([KeyboardButton(text="📤 Загрузить документ")])
     
-    # Показываем кнопку "Заказан" только если статус "Не загружен"
+    # Для статуса "Не загружен" показываем кнопку "Заказан"
     if doc_info["status_id"] == 1:
         buttons.append([KeyboardButton(text="🛒 Отметить как заказанный")])
     
-    # Показываем кнопку скачивания если документ загружен
-    if doc_info["status_id"] in [3, 4, 5]:
+    # Для статусов "Ожидает проверки" и "Проверен" показываем кнопку скачивания
+    if doc_info["status_id"] in [3, 4]:
         buttons.append([KeyboardButton(text="⬇️ Скачать документ")])
+    
+    # Только для статуса "Требуется отправить еще раз" показываем кнопку "Отправить новый вариант"
+    if doc_info["status_id"] == 5:
+        buttons.append([KeyboardButton(text="🔄 Отправить новый вариант")])
     
     buttons.append([KeyboardButton(text="↩️ Назад к документам")])
     
@@ -417,6 +424,30 @@ async def handle_document_selection(message: Message, state: FSMContext):
     await state.set_state(AuthState.document_action)
     await state.update_data(selected_doc=doc_info, doc_name=doc_name)
 
+@dp.message(AuthState.document_action, F.text == "🔄 Отправить новый вариант")
+async def request_reupload(message: Message, state: FSMContext):
+    """Запрос на повторную загрузку документа"""
+    data = await state.get_data()
+    selected_doc = data.get('selected_doc')
+    doc_name = data.get('doc_name')
+    
+    if not selected_doc:
+        await message.answer("⚠️ Документ не выбран.")
+        await state.clear()
+        return
+    
+    # Обновляем статус документа на "Отправить еще раз"
+    if await update_document_status(selected_doc['id'], 5):
+        await message.answer(
+            f"🔄 Теперь вы можете загрузить новый вариант документа '{doc_name}'",
+            reply_markup=ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton(text="📤 Загрузить документ")]],
+                resize_keyboard=True
+            )
+        )
+    else:
+        await message.answer("⚠️ Не удалось изменить статус документа.")
+
 @dp.message(AuthState.document_action, F.text == "📤 Загрузить документ")
 async def request_document_upload(message: Message, state: FSMContext):
     """Запрос на загрузку документа"""
@@ -424,14 +455,11 @@ async def request_document_upload(message: Message, state: FSMContext):
     doc_name = data.get('doc_name')
     
     if doc_name == "Excel с открытыми счетами":
-        await message.answer(
-            "📊 Пожалуйста, загрузите Excel файл с выписками банка."
-        )
+        await message.answer("📊 Пожалуйста, загрузите Excel файл (.xlsx или .xls) с выписками банка.")
         await state.set_state(AuthState.waiting_for_bank_data)
-        return
-    
-    await message.answer(f"📄 Пожалуйста, загрузите файл для документа: {doc_name}")
-    await state.set_state(AuthState.document_upload)
+    else:
+        await message.answer(f"📄 Пожалуйста, загрузите файл для документа: {doc_name}")
+        await state.set_state(AuthState.document_upload)
 
 @dp.message(AuthState.document_action, F.text == "🛒 Отметить как заказанный")
 async def mark_as_ordered(message: Message, state: FSMContext):
@@ -536,11 +564,20 @@ async def back_to_documents(message: Message, state: FSMContext):
 @dp.message(AuthState.waiting_for_bank_data, F.document)
 async def handle_bank_statement(message: Message, state: FSMContext):
     """Обработка выписки банка"""
-    chat_id = message.chat.id
     document = message.document
     
-    if not document.file_name.endswith(('.xlsx', '.xls')):
+    if not is_excel_file(document.file_name):
         await message.answer("❌ Пожалуйста, загрузите файл Excel (.xlsx или .xls)")
+        return
+    
+    data = await state.get_data()
+    selected_doc = data.get('selected_doc')
+    doc_name = data.get('doc_name')
+    chat_id = message.chat.id
+    
+    if not selected_doc:
+        await message.answer("⚠️ Документ не выбран.")
+        await state.clear()
         return
     
     candidate_uuid = await get_candidate_uuid_by_chat_id(chat_id)
@@ -556,19 +593,45 @@ async def handle_bank_statement(message: Message, state: FSMContext):
         file_path = os.path.join(tempfile.gettempdir(), document.file_name)
         await bot.download_file(file.file_path, file_path)
         
-        success, message_text = await process_bank_statement(file_path, candidate_uuid)
-        os.remove(file_path)
+        # Проверка, что файл действительно Excel
+        if not is_excel_file(file_path):
+            await message.answer("❌ Загруженный файл не является Excel документом.")
+            os.remove(file_path)
+            return
         
-        if success:
-            await message.answer(f"✅ {message_text}")
+        # Обработка файла
+        minio_client = get_minio_client()
+        with open(file_path, 'rb') as file_obj:
+            file_bytes = file_obj.read()
+        
+        file_extension = document.file_name.split('.')[-1] if document.file_name else 'xlsx'
+        s3_key = f"{candidate_uuid}/{selected_doc['id']}.{file_extension}"
+        bucket_name = "candidates"
+        
+        if not minio_client.bucket_exists(bucket_name):
+            minio_client.make_bucket(bucket_name)
+        
+        minio_client.put_object(
+            bucket_name,
+            s3_key,
+            io.BytesIO(file_bytes),
+            length=len(file_bytes),
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        
+        if await update_document_status(selected_doc['id'], 3):
+            await message.answer("✅ Excel файл с выписками успешно загружен!")
+            await state.clear()
+            await cmd_docs(message, state)
         else:
-            await message.answer(f"❌ {message_text}")
+            await message.answer("⚠️ Файл загружен, но не удалось обновить статус.")
         
-        await state.clear()
-        await cmd_docs(message, state)
+        os.remove(file_path)
     except Exception as e:
         logger.error(f"Error processing bank statement: {e}")
         await message.answer("⚠️ Произошла ошибка при обработке файла.")
+        if 'file_path' in locals() and os.path.exists(file_path):
+            os.remove(file_path)
         await state.clear()
 
 @dp.message(AuthState.document_upload, F.document)
@@ -578,6 +641,7 @@ async def handle_document_upload(message: Message, state: FSMContext):
     document = message.document
     data = await state.get_data()
     selected_doc = data.get('selected_doc')
+    doc_name = data.get('doc_name')
     
     if not selected_doc:
         await message.answer("⚠️ Документ не выбран.")
@@ -616,7 +680,7 @@ async def handle_document_upload(message: Message, state: FSMContext):
         )
         
         if await update_document_status(selected_doc['id'], 3):
-            await message.answer("✅ Документ успешно загружен!")
+            await message.answer(f"✅ Документ '{doc_name}' успешно загружен!")
             await state.clear()
             await cmd_docs(message, state)
         else:
@@ -627,14 +691,14 @@ async def handle_document_upload(message: Message, state: FSMContext):
         await message.answer("⚠️ Произошла ошибка при загрузке документа.")
         await state.clear()
 
-# Остальные обработчики (геолокация, профиль, поддержка и т.д.)
+# Остальные обработчики
 @dp.message(F.text == "📍 Поделиться геолокацией")
 async def request_location(message: Message, state: FSMContext):
     """Запрашивает геолокацию у пользователя"""
     location_kb = ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📍 Отправить мою геолокацию", request_location=True)],
-            [KeyboardButton(text="↩️ Назад")]
+            [KeyboardButton(text="↩️ Назад в меню")]
         ],
         resize_keyboard=True
     )
@@ -815,6 +879,13 @@ async def back_to_menu(message: Message, state: FSMContext):
     await state.clear()
     await show_main_menu(message)
     await save_message(message.chat.id, "Пользователь вернулся в меню", False)
+
+@dp.message()
+async def handle_unprocessed_messages(message: Message, state: FSMContext):
+    """Обработчик непредусмотренных сообщений"""
+    current_state = await state.get_state()
+    logger.warning(f"Unhandled message: {message.text}. Current state: {current_state}")
+    await message.answer("Извините, я не понял вашего сообщения. Пожалуйста, используйте кнопки меню.")
 
 async def main():
     await dp.start_polling(bot)

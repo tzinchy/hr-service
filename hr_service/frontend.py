@@ -8,13 +8,60 @@ import asyncio
 import logging
 import google.generativeai as genai
 from frontend_auth.auth import check_auth, login, logout, admin_required, hr_admin_required, hr_user_required, test_requiered
-from candidate.tg_service import save_message
+
+def save_message(chat_id: int, text: str, is_from_admin: bool = False):
+    """Сохраняет сообщение в базу данных с проверкой существования чата"""
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                # Проверяем существование чата
+                cursor.execute(
+                    """SELECT 1 FROM comm.telegram_chat WHERE chat_id = %s""", 
+                    (chat_id,)
+                )
+                chat_exists = cursor.fetchone()
+                
+                # Если чат не существует, создаем его
+                if not chat_exists:
+                    cursor.execute("""
+                        INSERT INTO comm.telegram_chat (
+                            chat_id, 
+                            chat_type,
+                            created_at,
+                            updated_at
+                        ) VALUES (%s, %s, %s, %s)
+                    """, (
+                        chat_id,
+                        'private',
+                        datetime.now(),
+                        datetime.now()
+                    ))
+                
+                # Сохраняем сообщение
+                cursor.execute("""
+                    INSERT INTO comm.message (
+                        chat_id, 
+                        content, 
+                        sender_type, 
+                        sent_at, 
+                        is_from_admin
+                    ) VALUES (%s, %s, %s, %s, %s)
+                """, (
+                    chat_id,
+                    text,
+                    'admin' if is_from_admin else 'candidate',
+                    datetime.now(),
+                    is_from_admin
+                ))
+                conn.commit()
+    except Exception as e:
+        logger.error(f"Error saving message: {e}")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-POLLING_INTERVAL = 2  
+POLLING_INTERVAL = 20
 MESSAGE_PREVIEW_LENGTH = 20  
 GEMINI_API_KEY = settings.gemini.GEMINI_TOKEN 
 
@@ -299,9 +346,8 @@ def main():
         
         # Проверка новых сообщений
         if (datetime.now() - st.session_state.last_message_check).seconds > POLLING_INTERVAL:
-            if check_new_messages(st.session_state.selected_chat, st.session_state.last_update):
-                st.session_state.last_update = datetime.now()
-                st.rerun()
+            st.session_state.last_update = datetime.now()
+            st.rerun()
             st.session_state.last_message_check = datetime.now()
         
         # Контейнер для чата

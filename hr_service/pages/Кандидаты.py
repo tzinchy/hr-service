@@ -124,8 +124,6 @@ def show_status_badges(status_counts):
 
 def show_candidate_documents(candidate):
     """Показываем документы кандидата в правой панели с прокруткой"""
-    st.subheader(f"📂 Документы: {candidate['last_name']} {candidate['first_name']}")
-    
     # Фильтры документов
     col1, col2 = st.columns(2)
     with col1:
@@ -195,10 +193,19 @@ def show_candidate_documents(candidate):
                     
                     # Изменение статуса (только для разрешенных статусов)
                     if status_id in ALLOWED_STATUS_CHANGES:
-                        new_status_options = [DOCUMENT_STATUSES[status][0] for status in ALLOWED_STATUS_CHANGES[status_id]]
+                        # Получаем доступные статусы для изменения
+                        allowed_new_statuses = ALLOWED_STATUS_CHANGES[status_id]
+                        new_status_options = [DOCUMENT_STATUSES[status][0] for status in allowed_new_statuses]
+                        
+                        # Выбираем первый доступный статус по умолчанию
+                        default_idx = 0
+                        if status_id == 5:  # Если текущий статус "Отправьте заново", выбираем "Ожидает проверки"
+                            default_idx = new_status_options.index(DOCUMENT_STATUSES[3][0])
+                        
                         new_status_name = st.selectbox(
                             "Изменить статус на:",
                             options=new_status_options,
+                            index=default_idx,
                             key=f"status_select_{doc['document_id']}"
                         )
                         
@@ -206,8 +213,14 @@ def show_candidate_documents(candidate):
                                    key=f"confirm_{doc['document_id']}",
                                    type="primary"):
                             new_status_id = [k for k, v in DOCUMENT_STATUSES.items() if v[0] == new_status_name][0]
-                            update_document_status(doc['document_id'], new_status_id)
-                            st.rerun()
+                            
+                            # Дополнительная проверка разрешенных изменений
+                            if new_status_id in ALLOWED_STATUS_CHANGES.get(status_id, []):
+                                update_document_status(doc['document_id'], new_status_id)
+                                st.success("Статус успешно обновлен!")
+                                st.rerun()
+                            else:
+                                st.error("Недопустимое изменение статуса!")
 
 # --- Главная страница ---
 def candidates_page():
