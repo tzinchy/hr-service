@@ -48,14 +48,19 @@ bot = Bot(token=settings.bot.TELEGRAM_TOKEN)
 dp = Dispatcher()
 
 DOCUMENT_STATUSES = {
-    1: "Не загружен ❌",
-    2: "Заказан 🛒",
-    3: "Ожидает проверки ⏳",
-    4: "Проверен ✅",
-    5: "Отправьте еще раз🔄"
+    1: ("Не загружен", "❌"),
+    2: ("Заказан", "🛒"),
+    3: ("Ожидает проверки", "⏳"),
+    4: ("Проверен", "✅"),
+    5: ("Требуется новый вариант", "🔄")
 }
 
 # Вспомогательные функции
+def get_status_text(status_id: int) -> str:
+    """Возвращает текст статуса с иконкой"""
+    status = DOCUMENT_STATUSES.get(status_id, ("Неизвестно", "❓"))
+    return f"{status[1]} {status[0]}"
+
 async def get_main_keyboard():
     """Возвращает клавиатуру главного меню"""
     return ReplyKeyboardMarkup(
@@ -76,8 +81,8 @@ async def show_main_menu(message: Message, first_name: str = "", last_name: str 
     )
     await save_message(message.chat.id, "Пользователю показано главное меню", True)
 
-async def update_document_status(document_id: int, new_status: int):
-    """Обновляет статус документа"""
+async def update_document_status(document_id: int, new_status: int, chat_id: int, doc_name: str):
+    """Обновляет статус документа и сохраняет сообщение"""
     try:
         with get_connection() as conn:
             with conn.cursor() as cursor:
@@ -98,6 +103,21 @@ async def update_document_status(document_id: int, new_status: int):
                     """, (updated_doc[0], updated_doc[1]))
                     
                     conn.commit()
+                    
+                    # Сохраняем информативное сообщение
+                    action = {
+                        1: "сброшен в 'Не загружен'",
+                        2: "отмечен как заказанный",
+                        3: "отправлен на проверку",
+                        4: "отмечен как проверенный",
+                        5: "запрошена повторная загрузка"
+                    }.get(new_status, "изменен")
+                    
+                    await save_message(
+                        chat_id,
+                        f"Документ '{doc_name}' {action}",
+                        True
+                    )
                     return True
         return False
     except Exception as e:
@@ -330,8 +350,8 @@ async def cmd_docs(message: Message, state: FSMContext):
                 keyboard = []
                 for doc in documents:
                     doc_id, doc_name, status_id, template_id = doc
-                    status = DOCUMENT_STATUSES[status_id]
-                    keyboard.append([KeyboardButton(text=f"{doc_name} {status}")])
+                    status_text = get_status_text(status_id)
+                    keyboard.append([KeyboardButton(text=f"{doc_name} {status_text}")])
                 
                 keyboard.append([KeyboardButton(text="↩️ Назад в меню")])
                 
@@ -346,8 +366,8 @@ async def cmd_docs(message: Message, state: FSMContext):
                 response = f"📂 {first_name}, выберите документ для загрузки или изменения статуса:\n\n"
                 for doc in documents:
                     doc_id, doc_name, status_id, _ = doc
-                    status = DOCUMENT_STATUSES[status_id]
-                    response += f"{doc_name}: {status}\n"
+                    status_text = get_status_text(status_id)
+                    response += f"{doc_name}: {status_text}\n"
                 
                 await message.answer(response, reply_markup=doc_kb)
                 await save_message(chat_id, "Пользователю отображен список документов", True)
@@ -387,109 +407,96 @@ async def handle_document_selection(message: Message, state: FSMContext):
     
     doc_info = docs_info[doc_name]
     
-    # Создаем клавиатуру для выбора действия с документом
-    buttons = []
+    # Создаем инлайн-клавиатуру для управления документом
+    keyboard = []
     
-    # Для статусов "Не загружен" и "Требуется отправить еще раз" показываем кнопку загрузки
-    if doc_info["status_id"] in [1, 5]:
-        buttons.append([KeyboardButton(text="📤 Загрузить документ")])
+    # Для статусов "Не загружен", "Заказан" и "Требуется новый вариант" показываем кнопку загрузки
+    if doc_info["status_id"] in [1, 2, 5]:
+        keyboard.append([InlineKeyboardButton(
+            text="📤 Загрузить документ", 
+            callback_data=f"upload_{doc_info['id']}"
+        )])
     
     # Для статуса "Не загружен" показываем кнопку "Заказан"
     if doc_info["status_id"] == 1:
-        buttons.append([KeyboardButton(text="🛒 Отметить как заказанный")])
+        keyboard.append([InlineKeyboardButton(
+            text="🛒 Отметить как заказанный", 
+            callback_data=f"order_{doc_info['id']}"
+        )])
     
     # Для статусов "Ожидает проверки" и "Проверен" показываем кнопку скачивания
     if doc_info["status_id"] in [3, 4]:
-        buttons.append([KeyboardButton(text="⬇️ Скачать документ")])
+        keyboard.append([InlineKeyboardButton(
+            text="⬇️ Скачать документ", 
+            callback_data=f"download_{doc_info['id']}"
+        )])
     
-    # Только для статуса "Требуется отправить еще раз" показываем кнопку "Отправить новый вариант"
-    if doc_info["status_id"] == 5:
-        buttons.append([KeyboardButton(text="🔄 Отправить новый вариант")])
+    # Для статуса "Проверен" показываем кнопку запроса новой загрузки
+    if doc_info["status_id"] == 4:
+        keyboard.append([InlineKeyboardButton(
+            text="🔄 Запросить новый вариант", 
+            callback_data=f"request_reupload_{doc_info['id']}"
+        )])
     
-    buttons.append([KeyboardButton(text="↩️ Назад к документам")])
+    keyboard.append([InlineKeyboardButton(
+        text="↩️ Назад к документам", 
+        callback_data="back_to_docs"
+    )])
     
-    action_kb = ReplyKeyboardMarkup(
-        keyboard=buttons,
-        resize_keyboard=True
-    )
+    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
     
     await message.answer(
         f"📄 Документ: <b>{doc_name}</b>\n"
-        f"Статус: <b>{DOCUMENT_STATUSES[doc_info['status_id']]}</b>\n\n"
+        f"Статус: <b>{get_status_text(doc_info['status_id'])}</b>\n\n"
         f"Выберите действие:",
-        reply_markup=action_kb,
+        reply_markup=reply_markup,
         parse_mode="HTML"
     )
     
     await state.set_state(AuthState.document_action)
     await state.update_data(selected_doc=doc_info, doc_name=doc_name)
 
-@dp.message(AuthState.document_action, F.text == "🔄 Отправить новый вариант")
-async def request_reupload(message: Message, state: FSMContext):
-    """Запрос на повторную загрузку документа"""
-    data = await state.get_data()
-    selected_doc = data.get('selected_doc')
-    doc_name = data.get('doc_name')
-    
-    if not selected_doc:
-        await message.answer("⚠️ Документ не выбран.")
-        await state.clear()
-        return
-    
-    # Обновляем статус документа на "Отправить еще раз"
-    if await update_document_status(selected_doc['id'], 5):
-        await message.answer(
-            f"🔄 Теперь вы можете загрузить новый вариант документа '{doc_name}'",
-            reply_markup=ReplyKeyboardMarkup(
-                keyboard=[[KeyboardButton(text="📤 Загрузить документ")]],
-                resize_keyboard=True
-            )
-        )
-    else:
-        await message.answer("⚠️ Не удалось изменить статус документа.")
-
-@dp.message(AuthState.document_action, F.text == "📤 Загрузить документ")
-async def request_document_upload(message: Message, state: FSMContext):
-    """Запрос на загрузку документа"""
+@dp.callback_query(AuthState.document_action, F.data.startswith("upload_"))
+async def handle_upload_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Обработка загрузки документа"""
     data = await state.get_data()
     doc_name = data.get('doc_name')
+    
+    await callback.message.edit_reply_markup()  # Убираем кнопки
     
     if doc_name == "Excel с открытыми счетами":
-        await message.answer("📊 Пожалуйста, загрузите Excel файл (.xlsx или .xls) с выписками банка.")
+        await callback.message.answer("📊 Пожалуйста, загрузите Excel файл (.xlsx или .xls) с выписками банка.")
         await state.set_state(AuthState.waiting_for_bank_data)
     else:
-        await message.answer(f"📄 Пожалуйста, загрузите файл для документа: {doc_name}")
+        await callback.message.answer(f"📄 Пожалуйста, загрузите файл для документа: {doc_name}")
         await state.set_state(AuthState.document_upload)
+    
+    await callback.answer()
 
-@dp.message(AuthState.document_action, F.text == "🛒 Отметить как заказанный")
-async def mark_as_ordered(message: Message, state: FSMContext):
-    """Отметить документ как заказанный"""
+@dp.callback_query(AuthState.document_action, F.data.startswith("order_"))
+async def handle_order_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Обработка отметки документа как заказанного"""
+    document_id = callback.data.split("_")[1]
     data = await state.get_data()
-    selected_doc = data.get('selected_doc')
     doc_name = data.get('doc_name')
     
-    if not selected_doc:
-        await message.answer("⚠️ Документ не выбран.")
-        await state.clear()
-        return
-    
-    if await update_document_status(selected_doc['id'], 2):
-        await message.answer(f"✅ Документ '{doc_name}' отмечен как заказанный!")
-        await cmd_docs(message, state)
+    if await update_document_status(document_id, 2, callback.message.chat.id, doc_name):
+        await callback.message.edit_text(
+            f"✅ Документ '{doc_name}' отмечен как заказанный!",
+            reply_markup=None
+        )
+        await cmd_docs(callback.message, state)
     else:
-        await message.answer("⚠️ Произошла ошибка при изменении статуса документа.")
-
-@dp.message(AuthState.document_action, F.text == "⬇️ Скачать документ")
-async def download_document(message: Message, state: FSMContext):
-    """Скачивание документа"""
-    data = await state.get_data()
-    selected_doc = data.get('selected_doc')
-    doc_name = data.get('doc_name')
+        await callback.message.answer("⚠️ Произошла ошибка при изменении статуса документа.")
     
-    if not selected_doc:
-        await message.answer("⚠️ Документ не выбран.")
-        await state.clear()
-        return
+    await callback.answer()
+
+@dp.callback_query(AuthState.document_action, F.data.startswith("download_"))
+async def handle_download_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Обработка скачивания документа"""
+    document_id = callback.data.split("_")[1]
+    data = await state.get_data()
+    doc_name = data.get('doc_name')
     
     try:
         with get_connection() as conn:
@@ -498,12 +505,12 @@ async def download_document(message: Message, state: FSMContext):
                     SELECT s3_bucket, s3_key, content_type
                     FROM hr.candidate_document
                     WHERE document_id = %s
-                """, (selected_doc['id'],))
+                """, (document_id,))
                 
                 doc_data = cursor.fetchone()
                 
                 if not doc_data or not doc_data[0] or not doc_data[1]:
-                    await message.answer("⚠️ Файл документа не найден.")
+                    await callback.message.answer("⚠️ Файл документа не найден.")
                     return
                 
                 bucket, key, content_type = doc_data
@@ -528,7 +535,7 @@ async def download_document(message: Message, state: FSMContext):
                     file_name = f"{doc_name.replace(' ', '_')}.{extension}"
                     
                     # Отправляем файл пользователю
-                    await message.answer_document(
+                    await callback.message.answer_document(
                         BufferedInputFile(
                             file_bytes,
                             filename=file_name
@@ -537,14 +544,14 @@ async def download_document(message: Message, state: FSMContext):
                     )
                     
                     await save_message(
-                        message.chat.id,
+                        callback.message.chat.id,
                         f"Пользователь скачал документ: {doc_name}",
                         True
                     )
                     
                 except Exception as e:
                     logger.error(f"Error downloading file from MinIO: {e}")
-                    await message.answer("⚠️ Ошибка при получении файла из хранилища.")
+                    await callback.message.answer("⚠️ Ошибка при получении файла из хранилища.")
                 
                 finally:
                     if 'file_data' in locals():
@@ -553,13 +560,47 @@ async def download_document(message: Message, state: FSMContext):
     
     except Exception as e:
         logger.error(f"Error in download_document: {e}")
-        await message.answer("⚠️ Произошла ошибка при подготовке документа.")
+        await callback.message.answer("⚠️ Произошла ошибка при подготовке документа.")
+    
+    await callback.answer()
 
-@dp.message(AuthState.document_action, F.text == "↩️ Назад к документам")
-async def back_to_documents(message: Message, state: FSMContext):
-    """Возврат к списку документов"""
+@dp.callback_query(AuthState.document_action, F.data.startswith("request_reupload_"))
+async def handle_request_reupload_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Обработка запроса новой загрузки документа"""
+    document_id = int(callback.data.split("_")[2])
+    data = await state.get_data()
+    doc_name = data.get('doc_name')
+    
+    if await update_document_status(document_id, 5, callback.message.chat.id, doc_name):
+        await callback.message.edit_text(
+            f"🔄 Для документа '{doc_name}' запрошена повторная загрузка",
+            reply_markup=None
+        )
+        
+        # Предлагаем загрузить новый вариант
+        reply_markup = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(
+                text="📤 Загрузить новый вариант", 
+                callback_data=f"upload_{document_id}"
+            )]
+        ])
+        
+        await callback.message.answer(
+            f"Пожалуйста, загрузите новый вариант документа '{doc_name}':",
+            reply_markup=reply_markup
+        )
+    else:
+        await callback.message.answer("⚠️ Не удалось запросить повторную загрузку.")
+    
+    await callback.answer()
+
+@dp.callback_query(AuthState.document_action, F.data == "back_to_docs")
+async def handle_back_to_docs(callback: types.CallbackQuery, state: FSMContext):
+    """Обработка возврата к списку документов"""
     await state.clear()
-    await cmd_docs(message, state)
+    await callback.message.delete()  # Удаляем сообщение с кнопками
+    await cmd_docs(callback.message, state)
+    await callback.answer()
 
 @dp.message(AuthState.waiting_for_bank_data, F.document)
 async def handle_bank_statement(message: Message, state: FSMContext):
@@ -619,8 +660,8 @@ async def handle_bank_statement(message: Message, state: FSMContext):
             content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
         
-        if await update_document_status(selected_doc['id'], 3):
-            await message.answer("✅ Excel файл с выписками успешно загружен!")
+        if await update_document_status(selected_doc['id'], 3, chat_id, doc_name):
+            await message.answer(f"✅ Файл '{doc_name}' успешно загружен и отправлен на проверку!")
             await state.clear()
             await cmd_docs(message, state)
         else:
@@ -679,8 +720,8 @@ async def handle_document_upload(message: Message, state: FSMContext):
             content_type=document.mime_type
         )
         
-        if await update_document_status(selected_doc['id'], 3):
-            await message.answer(f"✅ Документ '{doc_name}' успешно загружен!")
+        if await update_document_status(selected_doc['id'], 3, chat_id, doc_name):
+            await message.answer(f"✅ Документ '{doc_name}' успешно загружен и отправлен на проверку!")
             await state.clear()
             await cmd_docs(message, state)
         else:
