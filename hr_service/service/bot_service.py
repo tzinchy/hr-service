@@ -1,9 +1,13 @@
-import pandas as pd
-from datetime import datetime
-from candidate.database import get_connection
+import asyncio
 import logging
 
-# Настройка логирования
+from aiogram import Bot
+from core.config import settings, DOCUMENT_STATUSES
+
+import pandas as pd
+from datetime import datetime
+from repository.database import get_connection
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -230,4 +234,73 @@ async def save_location(candidate_uuid: str, latitude: float, longitude: float, 
                 return True
     except Exception as e:
         logger.error(f"Error saving location: {e}")
+        return False
+
+def send_telegram_message(chat_id: int, text: str):
+    """Отправляет сообщение через aiogram"""
+
+    async def async_send():
+        bot = Bot(token=settings.bot.TELEGRAM_TOKEN)
+        try:
+            await bot.send_message(chat_id=int(chat_id), text=text)
+            logger.info(f"Сообщение отправлено в чат {chat_id}")
+        except Exception as e:
+            logger.error(f"Ошибка при отправке сообщения: {e}")
+            raise
+        finally:
+            await bot.session.close()
+
+    asyncio.run(async_send())
+
+def is_excel_file(file_name: str) -> bool:
+    """Проверяет, является ли файл Excel"""
+    return file_name.lower().endswith(('.xlsx', '.xls'))
+
+# Вспомогательные функции
+def get_status_text(status_id: int) -> str:
+    """Возвращает текст статуса с иконкой"""
+    status = DOCUMENT_STATUSES.get(status_id, ("Неизвестно", "❓"))
+    return f"{status[1]} {status[0]}"
+
+async def update_document_status(document_id: int, new_status: int, chat_id: int, doc_name: str):
+    """Обновляет статус документа и сохраняет сообщение"""
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    UPDATE hr.candidate_document
+                    SET status_id = %s,
+                        updated_at = NOW()
+                    WHERE document_id = %s
+                    RETURNING document_id, status_id
+                """, (new_status, document_id))
+                
+                updated_doc = cursor.fetchone()
+                
+                if updated_doc:
+                    cursor.execute("""
+                        INSERT INTO hr.document_history (document_uuid, status_id, created_at)
+                        VALUES (%s, %s, NOW())
+                    """, (updated_doc[0], updated_doc[1]))
+                    
+                    conn.commit()
+                    
+                    # Сохраняем информативное сообщение
+                    action = {
+                        1: "сброшен в 'Не загружен'",
+                        2: "отмечен как заказанный",
+                        3: "отправлен на проверку",
+                        4: "отмечен как проверенный",
+                        5: "запрошена повторная загрузка"
+                    }.get(new_status, "изменен")
+                    
+                    await save_message(
+                        chat_id,
+                        f"Документ '{doc_name}' {action}",
+                        True
+                    )
+                    return True
+        return False
+    except Exception as e:
+        logger.error(f"Error updating document status: {e}")
         return False

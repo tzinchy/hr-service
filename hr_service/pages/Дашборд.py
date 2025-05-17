@@ -1,88 +1,74 @@
 import streamlit as st
 import pandas as pd
-import psycopg2
 import plotly.express as px
 import pydeck as pdk
 from datetime import datetime, timedelta
-from configparser import ConfigParser
-from candidate.database import get_connection
+from repository.dashboard_repository import (
+    get_df_locations,
+    get_pending_docs,
+    get_documents_by_type,
+    get_documents_by_type_by_status,
+    get_employees_by_department,
+    get_candidates_by_status,
+    get_document_processing_times,
+    get_candidate_status_history
+)
 
-# Page configuration must be FIRST
+# Page configuration
 st.set_page_config(
     page_title="HR Analytics Dashboard",
     page_icon="📊",
     layout="wide"
 )
 
-# Database connection
-@st.cache_resource
-def get_db_connection():
-    return get_connection()
+# Cache configuration
+@st.cache_data(ttl=3600, show_spinner="Loading location data...")
+def get_cached_locations():
+    return get_df_locations()
 
-conn = get_db_connection()
+@st.cache_data(ttl=600, show_spinner="Loading pending documents...")
+def get_cached_pending_docs():
+    return get_pending_docs()
+
+@st.cache_data(ttl=600, show_spinner="Loading documents by type...")
+def get_cached_documents_by_type():
+    return get_documents_by_type()
+
+@st.cache_data(ttl=600, show_spinner="Loading documents by status...")
+def get_cached_documents_by_status():
+    return get_documents_by_type_by_status()
+
+@st.cache_data(ttl=600, show_spinner="Loading department data...")
+def get_cached_employees_by_dept():
+    return get_employees_by_department()
+
+@st.cache_data(ttl=600, show_spinner="Loading candidate status data...")
+def get_cached_candidates_by_status():
+    return get_candidates_by_status()
+
+@st.cache_data(ttl=600, show_spinner="Loading document processing times...")
+def get_cached_doc_processing_times():
+    return get_document_processing_times()
+
+@st.cache_data(ttl=300, show_spinner="Loading candidate history...")
+def get_cached_candidate_history(limit=100):
+    return get_candidate_status_history(limit=limit)
 
 # Sidebar filters
-st.sidebar.title("Filters")
-date_range = st.sidebar.date_input(
-    "Date range",
-    value=[datetime.now() - timedelta(days=30), datetime.now()],
-    max_value=datetime.now()
-)
+def setup_sidebar_filters():
+    st.sidebar.title("Filters")
+    date_range = st.sidebar.date_input(
+        "Date range",
+        value=[datetime.now() - timedelta(days=30), datetime.now()],
+        max_value=datetime.now()
+    )
+    return date_range
 
-# Main dashboard
-st.title("HR Analytics Dashboard")
-
-# Tab layout
-tab1, tab2, tab3, tab4 = st.tabs([
-    "📍 Employee Locations", 
-    "📊 HR Analytics",
-    "👥 Candidates",
-    "📄 Documents"
-])
-
-with tab1:
+# Tab 1: Employee Locations
+def render_locations_tab():
     st.header("Employee & Candidate Locations")
     
-    # Query for employee locations
-    query = """
-    SELECT 
-        u.user_uuid,
-        u.first_name || ' ' || u.last_name as name,
-        u.email,
-        cl.latitude,
-        cl.longitude,
-        'employee' as type,
-        pl.position as position,
-        d.department,
-        m.management,
-        dv.division
-    FROM auth.user u
-    JOIN hr.candidate_location cl ON u.user_uuid = cl.candidate_uuid
-    LEFT JOIN auth.position p ON p.position_id = ANY(u.positions_ids)
-    LEFT JOIN auth.position_list pl ON p.position_list_id = pl.position_list_id
-    LEFT JOIN auth.division dv ON p.division_id = dv.division_id
-    LEFT JOIN auth.management m ON p.management_id = m.management_id
-    LEFT JOIN auth.department d ON m.department_id = d.department_id
-    
-    UNION ALL
-    
-    SELECT 
-        c.candidate_uuid,
-        c.first_name || ' ' || c.last_name as name,
-        c.email,
-        cl.latitude,
-        cl.longitude,
-        'candidate' as type,
-        NULL as position,
-        NULL as department,
-        NULL as management,
-        NULL as division
-    FROM hr.candidate c
-    JOIN hr.candidate_location cl ON c.candidate_uuid = cl.candidate_uuid
-    WHERE c.status_id NOT IN (SELECT status_id FROM hr.candidate_status WHERE is_final = true)
-    """
-    
-    df_locations = pd.read_sql(query, conn)
+    df_locations = get_cached_locations()
     
     if not df_locations.empty:
         # Map visualization
@@ -124,23 +110,14 @@ with tab1:
     else:
         st.warning("No location data available")
 
-with tab2:
+# Tab 2: HR Analytics
+def render_analytics_tab():
     st.header("HR Analytics")
     
     col1, col2 = st.columns(2)
     
     with col1:
-        # Employees by department
-        query = """
-        SELECT d.department, COUNT(u.user_uuid) as count
-        FROM auth.user u
-        JOIN auth.position p ON p.position_id = ANY(u.positions_ids)
-        JOIN auth.management m ON p.management_id = m.management_id
-        JOIN auth.department d ON m.department_id = d.department_id
-        GROUP BY d.department
-        """
-        df_dept = pd.read_sql(query, conn)
-        
+        df_dept = get_cached_employees_by_dept()
         if not df_dept.empty:
             fig = px.pie(df_dept, values='count', names='department', 
                          title='Employees by Department')
@@ -149,15 +126,7 @@ with tab2:
             st.info("No department data available")
     
     with col2:
-        # Candidates by status
-        query = """
-        SELECT cs.name as status, COUNT(c.candidate_uuid) as count
-        FROM hr.candidate c
-        JOIN hr.candidate_status cs ON c.status_id = cs.status_id
-        GROUP BY cs.name
-        """
-        df_status = pd.read_sql(query, conn)
-        
+        df_status = get_cached_candidates_by_status()
         if not df_status.empty:
             fig = px.bar(df_status, x='status', y='count', 
                          title='Candidates by Status', color='status')
@@ -165,18 +134,7 @@ with tab2:
         else:
             st.info("No candidate status data available")
     
-    # Document processing times
-    query = """
-    SELECT dt.name as document_type, 
-           AVG(EXTRACT(EPOCH FROM (dh.created_at - cd.submitted_at))/86400) as avg_processing_days
-    FROM hr.candidate_document cd
-    JOIN hr.document_template dt ON cd.template_id = dt.template_id
-    JOIN hr.document_history dh ON cd.document_id = dh.document_uuid
-    WHERE cd.submitted_at IS NOT NULL
-    GROUP BY dt.name
-    """
-    df_doc_times = pd.read_sql(query, conn)
-    
+    df_doc_times = get_cached_doc_processing_times()
     if not df_doc_times.empty:
         fig = px.bar(df_doc_times, x='document_type', y='avg_processing_days',
                      title='Average Document Processing Time (Days)')
@@ -184,25 +142,11 @@ with tab2:
     else:
         st.info("No document processing data available")
 
-with tab3:
+# Tab 3: Candidates
+def render_candidates_tab():
     st.header("Candidate Management")
     
-    # Candidate status timeline
-    query = """
-    SELECT 
-        c.candidate_uuid,
-        c.first_name || ' ' || c.last_name as name,
-        cs.name as status,
-        csh.changed_at,
-        u.first_name || ' ' || u.last_name as changed_by
-    FROM hr.candidate_status_history csh
-    JOIN hr.candidate c ON csh.candidate_id = c.candidate_uuid
-    JOIN hr.candidate_status cs ON csh.status_id = cs.status_id
-    JOIN auth.user u ON csh.changed_by = u.user_uuid
-    ORDER BY csh.changed_at DESC
-    LIMIT 100
-    """
-    df_status_history = pd.read_sql(query, conn)
+    df_status_history = get_cached_candidate_history(limit=100)
     
     if not df_status_history.empty:
         fig = px.timeline(df_status_history, 
@@ -213,27 +157,18 @@ with tab3:
                          title="Candidate Status Changes",
                          hover_data=["changed_by"])
         st.plotly_chart(fig, use_container_width=True)
-        
-        # Detailed view
         st.dataframe(df_status_history)
     else:
         st.info("No candidate status history available")
 
-with tab4:
+# Tab 4: Documents
+def render_documents_tab():
     st.header("Document Processing")
     
     col1, col2 = st.columns(2)
     
     with col1:
-        # Documents by status
-        query = """
-        SELECT ds.status, COUNT(cd.document_id) as count
-        FROM hr.candidate_document cd
-        JOIN hr.document_status ds ON cd.status_id = ds.document_status_id
-        GROUP BY ds.status
-        """
-        df_doc_status = pd.read_sql(query, conn)
-        
+        df_doc_status = get_cached_documents_by_status()
         if not df_doc_status.empty:
             fig = px.pie(df_doc_status, values='count', names='status',
                          title='Documents by Status')
@@ -242,15 +177,7 @@ with tab4:
             st.info("No document status data available")
     
     with col2:
-        # Documents by type
-        query = """
-        SELECT dt.name as document_type, COUNT(cd.document_id) as count
-        FROM hr.candidate_document cd
-        JOIN hr.document_template dt ON cd.template_id = dt.template_id
-        GROUP BY dt.name
-        """
-        df_doc_type = pd.read_sql(query, conn)
-        
+        df_doc_type = get_cached_documents_by_type()
         if not df_doc_type.empty:
             fig = px.bar(df_doc_type, x='document_type', y='count',
                          title='Documents by Type', color='document_type')
@@ -258,35 +185,36 @@ with tab4:
         else:
             st.info("No document type data available")
     
-    # Pending documents
-    query = """
-    SELECT 
-        c.first_name || ' ' || c.last_name as candidate,
-        dt.name as document_type,
-        cd.submitted_at,
-        cd.status_id,
-        CASE 
-            WHEN cd.approved_at IS NOT NULL THEN 'Approved'
-            WHEN cd.rejection_reason IS NOT NULL THEN 'Rejected'
-            WHEN cd.submitted_at IS NOT NULL THEN 'Pending Review'
-            WHEN cd.is_ordered THEN 'Ordered'
-            ELSE 'Not Submitted'
-        END as status,
-        cd.updated_at as last_updated
-    FROM hr.candidate_document cd
-    JOIN hr.document_template dt ON cd.template_id = dt.template_id
-    JOIN hr.candidate c ON cd.candidate_id = c.candidate_uuid
-    WHERE cd.approved_at IS NULL
-    ORDER BY cd.updated_at DESC
-    LIMIT 50
-    """
-    df_pending_docs = pd.read_sql(query, conn)
-    
+    df_pending_docs = get_cached_pending_docs()
     if not df_pending_docs.empty:
         st.subheader("Pending Documents")
         st.dataframe(df_pending_docs)
     else:
         st.info("No pending documents")
 
-# Close connection
-conn.close()
+# Main dashboard
+def main():
+    st.title("HR Analytics Dashboard")
+    date_range = setup_sidebar_filters()
+    
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "📍 Employee Locations", 
+        "📊 HR Analytics",
+        "👥 Candidates",
+        "📄 Documents"
+    ])
+    
+    with tab1:
+        render_locations_tab()
+    
+    with tab2:
+        render_analytics_tab()
+    
+    with tab3:
+        render_candidates_tab()
+    
+    with tab4:
+        render_documents_tab()
+
+if __name__ == "__main__":
+    main()

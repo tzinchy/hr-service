@@ -9,7 +9,7 @@ def get_connection():
         host=settings.project_management_setting.DB_HOST,
         user=settings.project_management_setting.DB_USER,
         password=settings.project_management_setting.DB_PASSWORD,
-        port=settings.project_management_setting.DB_PORT
+        port=settings.project_management_setting.DB_PORT,
     )
 
 
@@ -19,8 +19,7 @@ def get_minio_client():
     """
     return Minio(
         endpoint=settings.minio.MINIO_ENDPOINT,  # Обычно "localhost:9000"
-        access_key=settings.minio.MINIO_USER,     # Логин (по умолчанию "minioadmin")
-        secret_key=settings.minio.MINIO_PASSWORD, # Пароль (по умолчанию "minioadmin")
-        secure=False
+        access_key=settings.minio.MINIO_USER,  # Логин (по умолчанию "minioadmin")
+        secret_key=settings.minio.MINIO_PASSWORD,  # Пароль (по умолчанию "minioadmin")
+        secure=False,
     )
-

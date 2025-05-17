@@ -13,27 +13,19 @@ from aiogram.types import (
     BufferedInputFile
 )
 from datetime import datetime
-from candidate.database import get_connection, get_minio_client
+from hr_service.repository.database import get_connection, get_minio_client
 from core.config import settings
-from candidate.tg_service import (
-    is_user_authorized,
-    save_message,
-    create_required_documents,
-    get_candidate_uuid_by_chat_id,
-    save_location
-)
 import os
 import tempfile
 import io
-
-# Настройка логирования
+from service.bot_service import get_status_text, is_excel_file
+from repository.bot_repositoty import update_document_status, save_location, save_message, create_required_documents, is_user_authorized, get_candidate_uuid_by_chat_id
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# Состояния FSM
 class AuthState(StatesGroup):
     waiting_for_code = State()
     waiting_for_privacy_accept = State()
@@ -46,20 +38,6 @@ class AuthState(StatesGroup):
 # Инициализация бота
 bot = Bot(token=settings.bot.TELEGRAM_TOKEN)
 dp = Dispatcher()
-
-DOCUMENT_STATUSES = {
-    1: ("Не загружен", "❌"),
-    2: ("Заказан", "🛒"),
-    3: ("Ожидает проверки", "⏳"),
-    4: ("Проверен", "✅"),
-    5: ("Требуется новый вариант", "🔄")
-}
-
-# Вспомогательные функции
-def get_status_text(status_id: int) -> str:
-    """Возвращает текст статуса с иконкой"""
-    status = DOCUMENT_STATUSES.get(status_id, ("Неизвестно", "❓"))
-    return f"{status[1]} {status[0]}"
 
 async def get_main_keyboard():
     """Возвращает клавиатуру главного меню"""
@@ -81,52 +59,6 @@ async def show_main_menu(message: Message, first_name: str = "", last_name: str 
     )
     await save_message(message.chat.id, "Пользователю показано главное меню", True)
 
-async def update_document_status(document_id: int, new_status: int, chat_id: int, doc_name: str):
-    """Обновляет статус документа и сохраняет сообщение"""
-    try:
-        with get_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    UPDATE hr.candidate_document
-                    SET status_id = %s,
-                        updated_at = NOW()
-                    WHERE document_id = %s
-                    RETURNING document_id, status_id
-                """, (new_status, document_id))
-                
-                updated_doc = cursor.fetchone()
-                
-                if updated_doc:
-                    cursor.execute("""
-                        INSERT INTO hr.document_history (document_uuid, status_id, created_at)
-                        VALUES (%s, %s, NOW())
-                    """, (updated_doc[0], updated_doc[1]))
-                    
-                    conn.commit()
-                    
-                    # Сохраняем информативное сообщение
-                    action = {
-                        1: "сброшен в 'Не загружен'",
-                        2: "отмечен как заказанный",
-                        3: "отправлен на проверку",
-                        4: "отмечен как проверенный",
-                        5: "запрошена повторная загрузка"
-                    }.get(new_status, "изменен")
-                    
-                    await save_message(
-                        chat_id,
-                        f"Документ '{doc_name}' {action}",
-                        True
-                    )
-                    return True
-        return False
-    except Exception as e:
-        logger.error(f"Error updating document status: {e}")
-        return False
-
-def is_excel_file(file_name: str) -> bool:
-    """Проверяет, является ли файл Excel"""
-    return file_name.lower().endswith(('.xlsx', '.xls'))
 
 # Обработчики команд
 @dp.message(Command("start"))
