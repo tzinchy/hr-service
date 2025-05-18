@@ -13,49 +13,32 @@ def save_message(chat_id: int, text: str, is_from_admin: bool = False):
     try:
         with get_connection() as conn:
             with conn.cursor() as cursor:
-                # Проверяем существование чата
-                cursor.execute(
-                    """SELECT 1 FROM comm.telegram_chat WHERE chat_id = %s""",
-                    (chat_id,),
-                )
-                chat_exists = cursor.fetchone()
-
-                # Если чат не существует, создаем его
-                if not chat_exists:
-                    cursor.execute(
-                        """
-                        INSERT INTO comm.telegram_chat (
-                            chat_id, 
-                            chat_type,
-                            created_at,
-                            updated_at
-                        ) VALUES (%s, %s, %s, %s)
-                    """,
-                        (chat_id, "private", datetime.now(), datetime.now()),
-                    )
-
-                # Сохраняем сообщение
+                # ... существующий код ...
+                
+                # Сохраняем сообщение и возвращаем его ID
                 cursor.execute(
                     """
                     INSERT INTO comm.message (
                         chat_id, 
                         content, 
                         sender_type, 
-                        sent_at, 
                         is_from_admin
-                    ) VALUES (%s, %s, %s, %s, %s)
+                    ) VALUES (%s, %s, %s, %s)
+                    RETURNING message_id
                 """,
                     (
                         chat_id,
                         text,
                         "admin" if is_from_admin else "candidate",
-                        datetime.now(),
                         is_from_admin,
                     ),
                 )
+                message_id = cursor.fetchone()[0]
                 conn.commit()
+                return message_id
     except Exception as e:
         logger.error(f"Error saving message: {e}")
+        return None
 
 
 def add_candidate_to_db(first_name: str, last_name: str, email: str, sex: bool):
@@ -103,8 +86,8 @@ def add_candidate_to_db(first_name: str, last_name: str, email: str, sex: bool):
                 raise Exception(f"Ошибка при добавлении кандидата: {str(e)}")
 
 
-def get_all_chats():
-    """Получает список всех чатов с последним сообщением"""
+def get_all_chats(offset: int = 0, limit: int = 20):
+    """Получает список всех чатов с последним сообщением с пагинацией"""
     try:
         with get_connection() as conn:
             with conn.cursor() as cursor:
@@ -139,8 +122,9 @@ def get_all_chats():
                         LIMIT 1
                     ) m ON true
                     WHERE c.telegram_chat_id IS NOT NULL
-                    ORDER BY m.sent_at DESC NULLS LAST
-                """)
+                    ORDER BY COALESCE(m.sent_at, '1970-01-01'::timestamp) DESC
+                    LIMIT %s OFFSET %s
+                """, (limit, offset))
                 columns = [desc[0] for desc in cursor.description]
                 return pd.DataFrame(cursor.fetchall(), columns=columns)
     except Exception as e:
@@ -148,29 +132,34 @@ def get_all_chats():
         return pd.DataFrame()
 
 
-def check_new_messages(chat_id: int, last_check: datetime):
-    """Проверяет наличие новых сообщений через поллинг БД"""
+def check_new_messages(chat_id: int, last_message_id: int = None) -> bool:
+    """Проверяет наличие новых сообщений в чате"""
     try:
         with get_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute(
-                    """
-                    SELECT EXISTS (
-                        SELECT 1 FROM comm.message 
-                        WHERE chat_id = %s 
-                        AND NOT is_from_admin 
-                        AND sent_at > %s
-                    )
-                """,
-                    (chat_id, last_check),
-                )
+                if last_message_id:
+                    cursor.execute("""
+                        SELECT EXISTS (
+                            SELECT 1 FROM comm.message 
+                            WHERE chat_id = %s 
+                            AND message_id > %s
+                        )
+                    """, (chat_id, last_message_id))
+                else:
+                    cursor.execute("""
+                        SELECT EXISTS (
+                            SELECT 1 FROM comm.message 
+                            WHERE chat_id = %s
+                        )
+                    """, (chat_id,))
                 return cursor.fetchone()[0]
     except Exception as e:
-        logger.error(f"Ошибка при проверке новых сообщений: {e}")
+        logger.error(f"Error checking new messages: {e}")
         return False
 
-def get_chat_history(chat_id: int):
-    """Получает историю сообщений с кандидатом"""
+
+def get_chat_history(chat_id: int, offset: int = 0, limit: int = 50):
+    """Получает историю сообщений с кандидатом с пагинацией"""
     try:
         with get_connection() as conn:
             with conn.cursor() as cursor:
@@ -189,7 +178,7 @@ def get_chat_history(chat_id: int):
                     SET last_read = EXCLUDED.last_read
                 """, (int(chat_id),))
                 
-                # Получим историю сообщений
+                # Получим историю сообщений с пагинацией
                 cursor.execute("""
                     SELECT 
                         content,
@@ -197,11 +186,14 @@ def get_chat_history(chat_id: int):
                         is_from_admin
                     FROM comm.message
                     WHERE chat_id = %s
-                    ORDER BY sent_at
-                """, (int(chat_id),))
+                    ORDER BY sent_at DESC  -- Сначала новые сообщения
+                    LIMIT %s OFFSET %s
+                """, (int(chat_id), limit, offset))
                 messages = cursor.fetchall()
                 conn.commit()
                 return messages
     except Exception as e:
         logger.error(f"Ошибка при получении истории чата {chat_id}: {e}")
         return []
+    
+

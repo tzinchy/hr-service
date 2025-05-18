@@ -13,13 +13,14 @@ from aiogram.types import (
     BufferedInputFile
 )
 from datetime import datetime
-from hr_service.repository.database import get_connection, get_minio_client
+from repository.database import get_connection, get_minio_client
 from core.config import settings
 import os
 import tempfile
 import io
 from service.bot_service import get_status_text, is_excel_file
 from repository.bot_repositoty import update_document_status, save_location, save_message, create_required_documents, is_user_authorized, get_candidate_uuid_by_chat_id
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -59,12 +60,13 @@ async def show_main_menu(message: Message, first_name: str = "", last_name: str 
     )
     await save_message(message.chat.id, "Пользователю показано главное меню", True)
 
-
 # Обработчики команд
 @dp.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
     """Обработчик команды /start"""
-    await save_message(message.chat.id, f"Пользователь {message.from_user.full_name} запустил бота", False)
+    await save_message(message.chat.id, message.text, False)  # Сохраняем исходное сообщение
+    await save_message(message.chat.id, f"Пользователь {message.from_user.full_name} запустил бота", True)
+    
     await message.answer(
         "🔑 Для доступа к системе введите код приглашения, "
         "который вы получили по email:",
@@ -75,9 +77,11 @@ async def cmd_start(message: Message, state: FSMContext):
 @dp.message(AuthState.waiting_for_code, F.text)
 async def process_invitation_code(message: Message, state: FSMContext):
     """Обработка кода приглашения"""
+    await save_message(message.chat.id, message.text, False)  # Сохраняем введенный код
+    
     code = message.text.strip().upper()
     chat_id = message.chat.id
-    await save_message(chat_id, f"Пользователь ввел код: {code}", False)
+    await save_message(chat_id, f"Пользователь ввел код: {code}", True)
 
     try:
         with get_connection() as conn:
@@ -230,13 +234,14 @@ async def decline_privacy(callback: types.CallbackQuery, state: FSMContext):
     await state.clear()
     await save_message(callback.message.chat.id, "Пользователь отказался от политики конфиденциальности", True)
 
-# Обработчики документов
+# Обработчики документов с callback-кнопками
 @dp.message(Command("docs"))
 @dp.message(F.text == "📁 Мои документы")
 async def cmd_docs(message: Message, state: FSMContext):
     """Обработчик команды /docs и кнопки документов"""
+    await save_message(message.chat.id, message.text, False)
     chat_id = message.chat.id
-    await save_message(chat_id, "Пользователь запросил документы", False)
+    await save_message(chat_id, "Пользователь запросил документы", True)
     
     if not await is_user_authorized(chat_id):
         await message.answer("🔐 Для доступа к системе сначала авторизуйтесь.")
@@ -279,114 +284,116 @@ async def cmd_docs(message: Message, state: FSMContext):
                     """, (candidate_uuid,))
                     documents = cursor.fetchall()
                 
+                # Создаем инлайн-клавиатуру с callback-кнопками
                 keyboard = []
                 for doc in documents:
-                    doc_id, doc_name, status_id, template_id = doc
+                    doc_id, doc_name, status_id, _ = doc
                     status_text = get_status_text(status_id)
-                    keyboard.append([KeyboardButton(text=f"{doc_name} {status_text}")])
+                    keyboard.append([
+                        InlineKeyboardButton(
+                            text=f"{doc_name} - {status_text}",
+                            callback_data=f"doc_{doc_id}"
+                        )
+                    ])
                 
-                keyboard.append([KeyboardButton(text="↩️ Назад в меню")])
+                keyboard.append([InlineKeyboardButton(
+                    text="↩️ Назад в меню",
+                    callback_data="back_to_menu"
+                )])
                 
-                doc_kb = ReplyKeyboardMarkup(
-                    keyboard=keyboard,
-                    resize_keyboard=True
-                )
+                docs_kb = InlineKeyboardMarkup(inline_keyboard=keyboard)
                 
                 docs_info = {doc[1]: {"id": doc[0], "template_id": doc[3], "status_id": doc[2]} for doc in documents}
                 await state.update_data(docs_info=docs_info)
                 
-                response = f"📂 {first_name}, выберите документ для загрузки или изменения статуса:\n\n"
-                for doc in documents:
-                    doc_id, doc_name, status_id, _ = doc
-                    status_text = get_status_text(status_id)
-                    response += f"{doc_name}: {status_text}\n"
-                
-                await message.answer(response, reply_markup=doc_kb)
+                response = f"📂 {first_name}, ваши документы:\n\n"
+                await message.answer(response, reply_markup=docs_kb)
                 await save_message(chat_id, "Пользователю отображен список документов", True)
     except Exception as e:
         logger.error(f"Error displaying documents: {e}")
         await message.answer("⚠️ Произошла ошибка при получении документов.")
 
-@dp.message(
-    lambda message: message.text and any(
-        doc_name in message.text 
-        for doc_name in [
-            "Excel с открытыми счетами", "Справка о судимости", "Полис ОМС", "СНИЛС", 
-            "Трудовая книжка", "Паспорт", "Свидетельство о браке/разводе", 
-            "Военный билет/приписное", "ИНН", "2-НДФЛ", "Справка из наркодиспансера",
-            "Справка из психодиспансера", "Общая медицинская справка", 
-            "Социальные сети", "Дополнительные документы"
-        ]
-    )
-)
-async def handle_document_selection(message: Message, state: FSMContext):
-    """Обработка выбора документа"""
-    chat_id = message.chat.id
+@dp.callback_query(F.data.startswith("doc_"))
+async def handle_document_callback(callback: types.CallbackQuery, state: FSMContext):
+    """Обработка выбора документа через callback"""
+    document_id = callback.data.split("_")[1]
+    chat_id = callback.message.chat.id
     
-    if not await is_user_authorized(chat_id):
-        await message.answer("🔐 Для доступа к системе сначала авторизуйтесь.")
-        return
-    
-    data = await state.get_data()
-    docs_info = data.get('docs_info', {})
-    
-    # Находим полное имя документа из сообщения
-    doc_name = next((name for name in docs_info.keys() if name in message.text), None)
-    
-    if not doc_name:
-        await message.answer("Выберите документ из списка или используйте команду /docs")
-        return
-    
-    doc_info = docs_info[doc_name]
-    
-    # Создаем инлайн-клавиатуру для управления документом
-    keyboard = []
-    
-    # Для статусов "Не загружен", "Заказан" и "Требуется новый вариант" показываем кнопку загрузки
-    if doc_info["status_id"] in [1, 2, 5]:
-        keyboard.append([InlineKeyboardButton(
-            text="📤 Загрузить документ", 
-            callback_data=f"upload_{doc_info['id']}"
-        )])
-    
-    # Для статуса "Не загружен" показываем кнопку "Заказан"
-    if doc_info["status_id"] == 1:
-        keyboard.append([InlineKeyboardButton(
-            text="🛒 Отметить как заказанный", 
-            callback_data=f"order_{doc_info['id']}"
-        )])
-    
-    # Для статусов "Ожидает проверки" и "Проверен" показываем кнопку скачивания
-    if doc_info["status_id"] in [3, 4]:
-        keyboard.append([InlineKeyboardButton(
-            text="⬇️ Скачать документ", 
-            callback_data=f"download_{doc_info['id']}"
-        )])
-    
-    # Для статуса "Проверен" показываем кнопку запроса новой загрузки
-    if doc_info["status_id"] == 4:
-        keyboard.append([InlineKeyboardButton(
-            text="🔄 Запросить новый вариант", 
-            callback_data=f"request_reupload_{doc_info['id']}"
-        )])
-    
-    keyboard.append([InlineKeyboardButton(
-        text="↩️ Назад к документам", 
-        callback_data="back_to_docs"
-    )])
-    
-    reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    
-    await message.answer(
-        f"📄 Документ: <b>{doc_name}</b>\n"
-        f"Статус: <b>{get_status_text(doc_info['status_id'])}</b>\n\n"
-        f"Выберите действие:",
-        reply_markup=reply_markup,
-        parse_mode="HTML"
-    )
-    
-    await state.set_state(AuthState.document_action)
-    await state.update_data(selected_doc=doc_info, doc_name=doc_name)
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT t.name, d.status_id, d.template_id
+                    FROM hr.candidate_document d
+                    JOIN hr.document_template t ON d.template_id = t.template_id
+                    WHERE d.document_id = %s
+                """, (document_id,))
+                
+                doc_info = cursor.fetchone()
+                if not doc_info:
+                    await callback.answer("Документ не найден")
+                    return
+                
+                doc_name, status_id, template_id = doc_info
+                
+                # Создаем клавиатуру с действиями для документа
+                keyboard = []
+                
+                # Для статусов "Не загружен", "Заказан" и "Требуется новый вариант" показываем кнопку загрузки
+                if status_id in [1, 2, 5]:
+                    keyboard.append([InlineKeyboardButton(
+                        text="📤 Загрузить документ", 
+                        callback_data=f"upload_{document_id}"
+                    )])
+                
+                # Для статуса "Не загружен" показываем кнопку "Заказан"
+                if status_id == 1:
+                    keyboard.append([InlineKeyboardButton(
+                        text="🛒 Отметить как заказанный", 
+                        callback_data=f"order_{document_id}"
+                    )])
+                
+                # Для статусов "Ожидает проверки" и "Проверен" показываем кнопку скачивания
+                if status_id in [3, 4]:
+                    keyboard.append([InlineKeyboardButton(
+                        text="⬇️ Скачать документ", 
+                        callback_data=f"download_{document_id}"
+                    )])
+                
+                # Для статуса "Проверен" показываем кнопку запроса новой загрузки
+                if status_id == 4:
+                    keyboard.append([InlineKeyboardButton(
+                        text="🔄 Запросить новый вариант", 
+                        callback_data=f"request_reupload_{document_id}"
+                    )])
+                
+                keyboard.append([InlineKeyboardButton(
+                    text="↩️ Назад к документам", 
+                    callback_data="back_to_docs"
+                )])
+                
+                reply_markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+                
+                await callback.message.edit_text(
+                    f"📄 Документ: <b>{doc_name}</b>\n"
+                    f"Статус: <b>{get_status_text(status_id)}</b>\n\n"
+                    f"Выберите действие:",
+                    reply_markup=reply_markup,
+                    parse_mode="HTML"
+                )
+                
+                await state.set_state(AuthState.document_action)
+                await state.update_data(selected_doc={
+                    "id": document_id,
+                    "template_id": template_id,
+                    "status_id": status_id
+                }, doc_name=doc_name)
+                
+                await callback.answer()
+                
+    except Exception as e:
+        logger.error(f"Error handling document callback: {e}")
+        await callback.answer("⚠️ Произошла ошибка")
 
 @dp.callback_query(AuthState.document_action, F.data.startswith("upload_"))
 async def handle_upload_callback(callback: types.CallbackQuery, state: FSMContext):
@@ -499,7 +506,7 @@ async def handle_download_callback(callback: types.CallbackQuery, state: FSMCont
 @dp.callback_query(AuthState.document_action, F.data.startswith("request_reupload_"))
 async def handle_request_reupload_callback(callback: types.CallbackQuery, state: FSMContext):
     """Обработка запроса новой загрузки документа"""
-    document_id = int(callback.data.split("_")[2])
+    document_id = callback.data.split("_")[2]
     data = await state.get_data()
     doc_name = data.get('doc_name')
     
@@ -526,7 +533,7 @@ async def handle_request_reupload_callback(callback: types.CallbackQuery, state:
     
     await callback.answer()
 
-@dp.callback_query(AuthState.document_action, F.data == "back_to_docs")
+@dp.callback_query(F.data == "back_to_docs")
 async def handle_back_to_docs(callback: types.CallbackQuery, state: FSMContext):
     """Обработка возврата к списку документов"""
     await state.clear()
@@ -534,9 +541,18 @@ async def handle_back_to_docs(callback: types.CallbackQuery, state: FSMContext):
     await cmd_docs(callback.message, state)
     await callback.answer()
 
+@dp.callback_query(F.data == "back_to_menu")
+async def handle_back_to_menu(callback: types.CallbackQuery, state: FSMContext):
+    """Обработка возврата в главное меню"""
+    await state.clear()
+    await callback.message.delete()
+    await show_main_menu(callback.message)
+    await callback.answer()
+
 @dp.message(AuthState.waiting_for_bank_data, F.document)
 async def handle_bank_statement(message: Message, state: FSMContext):
     """Обработка выписки банка"""
+    await save_message(message.chat.id, "Пользователь загрузил файл", False)
     document = message.document
     
     if not is_excel_file(document.file_name):
@@ -610,6 +626,7 @@ async def handle_bank_statement(message: Message, state: FSMContext):
 @dp.message(AuthState.document_upload, F.document)
 async def handle_document_upload(message: Message, state: FSMContext):
     """Обработка загрузки документа"""
+    await save_message(message.chat.id, "Пользователь загрузил файл", False)
     chat_id = message.chat.id
     document = message.document
     data = await state.get_data()
@@ -668,6 +685,7 @@ async def handle_document_upload(message: Message, state: FSMContext):
 @dp.message(F.text == "📍 Поделиться геолокацией")
 async def request_location(message: Message, state: FSMContext):
     """Запрашивает геолокацию у пользователя"""
+    await save_message(message.chat.id, message.text, False)
     location_kb = ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="📍 Отправить мою геолокацию", request_location=True)],
@@ -681,11 +699,12 @@ async def request_location(message: Message, state: FSMContext):
         reply_markup=location_kb
     )
     await state.set_state(AuthState.waiting_for_location)
-    await save_message(message.chat.id, "Пользователь запросил отправку геолокации", False)
+    await save_message(message.chat.id, "Пользователь запросил отправку геолокации", True)
 
 @dp.message(AuthState.waiting_for_location, F.location)
 async def handle_location(message: Message, state: FSMContext):
     """Обрабатывает полученную геолокацию"""
+    await save_message(message.chat.id, "Пользователь отправил геолокацию", False)
     location = message.location
     chat_id = message.chat.id
     
@@ -732,6 +751,7 @@ async def handle_location(message: Message, state: FSMContext):
 @dp.message(F.text == "🗺️ Моя геолокация")
 async def show_my_location(message: Message):
     """Показывает сохраненную геолокацию пользователя"""
+    await save_message(message.chat.id, message.text, False)
     chat_id = message.chat.id
     
     try:
@@ -777,6 +797,7 @@ async def show_my_location(message: Message):
 @dp.message(F.text == "👤 Мой профиль")
 async def my_profile(message: Message):
     """Показывает профиль пользователя"""
+    await save_message(message.chat.id, message.text, False)
     chat_id = message.chat.id
     
     if not await is_user_authorized(chat_id):
@@ -809,7 +830,6 @@ async def my_profile(message: Message):
                 
                 profile_kb = ReplyKeyboardMarkup(
                     keyboard=[
-                        [KeyboardButton(text="✏️ Изменить данные")],
                         [KeyboardButton(text="↩️ Назад в меню")]
                     ],
                     resize_keyboard=True
@@ -825,8 +845,9 @@ async def my_profile(message: Message):
 @dp.message(F.text == "🆘 Поддержка")
 async def support(message: Message):
     """Обработчик кнопки поддержки"""
+    await save_message(message.chat.id, message.text, False)
     chat_id = message.chat.id
-    await save_message(chat_id, "Пользователь обратился в поддержку", False)
+    await save_message(chat_id, "Пользователь обратился в поддержку", True)
     
     support_kb = ReplyKeyboardMarkup(
         keyboard=[
@@ -839,8 +860,7 @@ async def support(message: Message):
     response = (
         "🆘 <b>Служба поддержки</b>\n\n"
         "Вы можете:\n"
-        "- Написать сообщение (Просто напишите в чат!;))\n"
-        "- Использовать команду /help для частых вопросов"
+        "- Написать сообщение\n"
     )
 
     await message.answer(response, reply_markup=support_kb, parse_mode="HTML")
@@ -849,13 +869,15 @@ async def support(message: Message):
 @dp.message(F.text == "↩️ Назад в меню")
 async def back_to_menu(message: Message, state: FSMContext):
     """Возврат в главное меню"""
+    await save_message(message.chat.id, message.text, False)
     await state.clear()
     await show_main_menu(message)
-    await save_message(message.chat.id, "Пользователь вернулся в меню", False)
+    await save_message(message.chat.id, "Пользователь вернулся в меню", True)
 
 @dp.message()
 async def handle_unprocessed_messages(message: Message, state: FSMContext):
     """Обработчик непредусмотренных сообщений"""
+    await save_message(message.chat.id, message.text, False)
     current_state = await state.get_state()
     logger.warning(f"Unhandled message: {message.text}. Current state: {current_state}")
     await message.answer("Извините, я не понял вашего сообщения. Пожалуйста, используйте кнопки меню.")

@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-from candidate.database import get_connection, get_minio_client
+from repository.database import get_connection, get_minio_client
 from frontend_auth.auth import check_auth, get_current_user_data
 
 # Настройки страницы
