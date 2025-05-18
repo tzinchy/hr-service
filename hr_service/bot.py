@@ -35,6 +35,7 @@ class AuthState(StatesGroup):
     waiting_for_location = State()
     editing_profile = State()
     document_action = State()
+    waiting_for_support_message = State()  # Добавляем новое состояние
 
 # Инициализация бота
 bot = Bot(token=settings.bot.TELEGRAM_TOKEN)
@@ -851,7 +852,7 @@ async def support(message: Message):
     
     support_kb = ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text="✉️ Написать сообщение")],
+            [KeyboardButton(text="✉️ Написать")],  # Укороченный текст
             [KeyboardButton(text="↩️ Назад в меню")]
         ],
         resize_keyboard=True
@@ -860,11 +861,31 @@ async def support(message: Message):
     response = (
         "🆘 <b>Служба поддержки</b>\n\n"
         "Вы можете:\n"
-        "- Написать сообщение\n"
+        "- Написать сообщение (кнопка '✉️ Написать')\n"
     )
 
     await message.answer(response, reply_markup=support_kb, parse_mode="HTML")
     await save_message(chat_id, "Показано меню поддержки", True)
+
+@dp.message(F.text == "✉️ Написать")
+async def start_support_message(message: Message, state: FSMContext):
+    """Обработчик кнопки начала написания сообщения"""
+    await save_message(message.chat.id, message.text, False)
+    await message.answer("Пожалуйста, напишите ваше сообщение для поддержки:", reply_markup=ReplyKeyboardRemove())
+    await state.set_state(AuthState.waiting_for_support_message)
+    await save_message(message.chat.id, "Пользователь начал писать сообщение в поддержку", True)
+
+@dp.message(AuthState.waiting_for_support_message)
+async def handle_support_message(message: Message, state: FSMContext):
+    """Обработка сообщения для поддержки"""
+    await save_message(message.chat.id, message.text, False)
+    # Здесь можно добавить логику отправки сообщения в поддержку
+    # Например, сохранение в БД или пересылку администратору
+    
+    await message.answer("✅ Ваше сообщение отправлено в поддержку. Мы ответим вам в ближайшее время.", 
+                        reply_markup=await get_main_keyboard())
+    await state.clear()
+    await save_message(message.chat.id, f"Пользователь отправил сообщение в поддержку: {message.text}", True)
 
 @dp.message(F.text == "↩️ Назад в меню")
 async def back_to_menu(message: Message, state: FSMContext):
