@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 from repository.database import get_connection, get_minio_client
 from frontend_auth.auth import check_auth, get_current_user_data
+from service.email_service import send_invitation_email
+from repository.strml_repository import add_candidate_to_db
 
 # Настройки страницы
 st.set_page_config(layout="wide")
@@ -39,7 +41,8 @@ def get_candidates_list(status_filter=None):
                     SUM(CASE WHEN d.status_id = 2 THEN 1 ELSE 0 END) as status_2,
                     SUM(CASE WHEN d.status_id = 3 THEN 1 ELSE 0 END) as status_3,
                     SUM(CASE WHEN d.status_id = 4 THEN 1 ELSE 0 END) as status_4,
-                    SUM(CASE WHEN d.status_id = 5 THEN 1 ELSE 0 END) as status_5
+                    SUM(CASE WHEN d.status_id = 5 THEN 1 ELSE 0 END) as status_5,
+                    c.notes as candidate_notes
                 FROM hr.candidate c
                 JOIN hr.candidate_status cs ON c.status_id = cs.status_id
                 LEFT JOIN hr.candidate_document d ON c.candidate_uuid = d.candidate_id
@@ -49,7 +52,7 @@ def get_candidates_list(status_filter=None):
                 base_query += f" WHERE cs.status_id = {status_filter}"
             
             base_query += """
-                GROUP BY c.candidate_uuid, c.first_name, c.last_name, c.email, cs.name, cs.status_id
+                GROUP BY c.candidate_uuid, c.first_name, c.last_name, c.email, cs.name, cs.status_id, c.notes
                 ORDER BY c.last_name, c.first_name
             """
             
@@ -70,7 +73,8 @@ def get_candidate_documents(candidate_uuid):
                     d.file_size,
                     d.content_type,
                     d.submitted_at,
-                    d.status_id
+                    d.status_id,
+                    d.notes as document_notes
                 FROM hr.candidate_document d
                 JOIN hr.document_template t ON d.template_id = t.template_id
                 WHERE d.candidate_id = %s
@@ -88,6 +92,28 @@ def update_document_status(document_id, new_status_id):
                 SET status_id = %s
                 WHERE document_id = %s
             """, (new_status_id, document_id))
+            conn.commit()
+
+def update_candidate_notes(candidate_uuid, notes):
+    """Обновляем заметки по кандидату"""
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                UPDATE hr.candidate
+                SET notes = %s
+                WHERE candidate_uuid = %s
+            """, (notes, candidate_uuid))
+            conn.commit()
+
+def update_document_notes(document_id, notes):
+    """Обновляем заметки по документу"""
+    with get_connection() as conn:
+        with conn.cursor() as cursor:
+            cursor.execute("""
+                UPDATE hr.candidate_document
+                SET notes = %s
+                WHERE document_id = %s
+            """, (notes, document_id))
             conn.commit()
 
 def download_from_minio(bucket, key):
@@ -156,6 +182,19 @@ def show_candidate_documents(candidate):
     # Показываем сводку по статусам
     show_status_badges(status_counts)
     
+    # Заметки по кандидату
+    with st.expander("📝 Заметки по кандидату"):
+        notes = st.text_area(
+            "Редактировать заметки",
+            value=candidate.get('candidate_notes', ''),
+            key=f"candidate_notes_{candidate['candidate_uuid']}",
+            height=100  # Изменено с 50 на 100 (минимально допустимое - 68)
+        )
+        if st.button("Сохранить заметки", key=f"save_candidate_notes_{candidate['candidate_uuid']}"):
+            update_candidate_notes(candidate['candidate_uuid'], notes)
+            st.success("Заметки сохранены!")
+            st.rerun()
+    
     # Контейнер с прокруткой для документов
     with st.container(height=500):  # Фиксированная высота с прокруткой
         for _, doc in documents_df.iterrows():
@@ -172,6 +211,19 @@ def show_candidate_documents(candidate):
                     st.markdown(f"**{doc['document_type']}**")
                     st.caption(f"🗓️ {date_str} | 📦 {file_size}")
                     st.markdown(f"{status_icon} **{status_name}**")
+                    
+                    # Заметки по документу
+                    with st.expander("📝 Заметки"):
+                        doc_notes = st.text_area(
+                            "Редактировать заметки",
+                            value=doc.get('document_notes', ''),
+                            key=f"doc_notes_{doc['document_id']}",
+                            height=70  # Изменено с 50 на 70 (минимально допустимое - 68)
+                        )
+                        if st.button("Сохранить", key=f"save_doc_notes_{doc['document_id']}"):
+                            update_document_notes(doc['document_id'], doc_notes)
+                            st.success("Заметки сохранены!")
+                            st.rerun()
                 
                 # Управление документом
                 with cols[1]:
@@ -222,10 +274,72 @@ def show_candidate_documents(candidate):
                             else:
                                 st.error("Недопустимое изменение статуса!")
 
+def show_add_candidate_form():
+    """Форма добавления нового кандидата"""
+    with st.form("add_candidate_form", clear_on_submit=True):
+        st.subheader("Добавить нового кандидата")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            first_name = st.text_input("Имя*", max_chars=50)
+        with col2:
+            last_name = st.text_input("Фамилия*", max_chars=50)
+        
+        email = st.text_input("Email*", max_chars=100)
+        sex = st.selectbox("Пол", options=["Мужской", "Женский"], index=0)
+        notes = st.text_area("Заметки", height=100)
+        
+        submitted = st.form_submit_button("Добавить кандидата")
+        
+        if submitted:
+            if not first_name or not last_name or not email:
+                st.error("Пожалуйста, заполните обязательные поля (помечены *)")
+            else:
+                try:
+                    # Получаем текущего пользователя (куратора)
+                    user_data = get_current_user_data()
+                    if not user_data or 'user_uuid' not in user_data:
+                        st.error("Не удалось получить данные текущего пользователя")
+                        return
+                    
+                    # Преобразуем пол в булево значение
+                    sex_bool = sex == "Мужской"
+                    
+                    # Добавляем кандидата
+                    user_uuid, invitation_code = add_candidate_to_db(
+                        first_name=first_name,
+                        last_name=last_name,
+                        email=email,
+                        sex=sex_bool,
+                        tutor_id=user_data['user_uuid'],  # Доступ к user_uuid как к ключу словаря
+                        notes=notes
+                    )
+                    
+                    # Отправляем приглашение
+                    send_invitation_email(email, invitation_code)
+                    
+                    st.success(f"Кандидат успешно добавлен! Приглашение отправлено на {email}")
+                    st.session_state['show_add_candidate_form'] = False
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Ошибка при добавлении кандидата: {str(e)}")
+
 # --- Главная страница ---
 def candidates_page():
     """Страница управления кандидатами"""
     st.title("👥 Кандидаты")
+    
+    # Кнопка для добавления нового кандидата
+    if st.button("➕ Добавить кандидата"):
+        st.session_state['show_add_candidate_form'] = True
+    
+    # Показываем форму добавления кандидата если нужно
+    if st.session_state.get('show_add_candidate_form', False):
+        show_add_candidate_form()
+        if st.button("Отмена"):
+            st.session_state['show_add_candidate_form'] = False
+            st.rerun()
+        return
     
     # Фильтры в одну строку
     filter_col1, filter_col2 = st.columns([3, 2])

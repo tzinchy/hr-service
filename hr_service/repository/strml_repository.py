@@ -13,35 +13,52 @@ def save_message(chat_id: int, text: str, is_from_admin: bool = False):
     try:
         with get_connection() as conn:
             with conn.cursor() as cursor:
-                # ... существующий код ...
-                
-                # Сохраняем сообщение и возвращаем его ID
+                # Проверяем существование чата
+                cursor.execute(
+                    """SELECT 1 FROM comm.telegram_chat WHERE chat_id = %s""",
+                    (chat_id,),
+                )
+                chat_exists = cursor.fetchone()
+
+                # Если чат не существует, создаем его
+                if not chat_exists:
+                    cursor.execute(
+                        """
+                        INSERT INTO comm.telegram_chat (
+                            chat_id, 
+                            chat_type,
+                            created_at,
+                            updated_at
+                        ) VALUES (%s, %s, %s, %s)
+                    """,
+                        (chat_id, "private", datetime.now(), datetime.now()),
+                    )
+
+                # Сохраняем сообщение
                 cursor.execute(
                     """
                     INSERT INTO comm.message (
                         chat_id, 
                         content, 
                         sender_type, 
+                        sent_at, 
                         is_from_admin
-                    ) VALUES (%s, %s, %s, %s)
-                    RETURNING message_id
+                    ) VALUES (%s, %s, %s, %s, %s)
                 """,
                     (
                         chat_id,
                         text,
                         "admin" if is_from_admin else "candidate",
+                        datetime.now(),
                         is_from_admin,
                     ),
                 )
-                message_id = cursor.fetchone()[0]
                 conn.commit()
-                return message_id
     except Exception as e:
         logger.error(f"Error saving message: {e}")
-        return None
 
 
-def add_candidate_to_db(first_name: str, last_name: str, email: str, sex: bool):
+def add_candidate_to_db(first_name: str, last_name: str, email: str, sex: bool, tutor_id, notes):
     """
     Добавляет кандидата в систему
     :param first_name: Имя
@@ -57,11 +74,11 @@ def add_candidate_to_db(first_name: str, last_name: str, email: str, sex: bool):
                 cursor.execute(
                     """
                     INSERT INTO hr.candidate (
-                        first_name, last_name, email, sex
-                    ) VALUES (%s, %s, %s, %s)
+                        first_name, last_name, email, sex, tutor_uuid, notes
+                    ) VALUES (%s, %s, %s, %s, %s, %s)
                     RETURNING candidate_uuid, invitation_code
                     """,
-                    (first_name, last_name, email, sex),
+                    (first_name, last_name, email, sex, tutor_id, notes),
                 )
 
                 candidate_uuid, invitation_code = cursor.fetchone()
@@ -196,4 +213,4 @@ def get_chat_history(chat_id: int, offset: int = 0, limit: int = 50):
         logger.error(f"Ошибка при получении истории чата {chat_id}: {e}")
         return []
     
-
+    
