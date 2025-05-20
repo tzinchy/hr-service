@@ -57,9 +57,6 @@ services:
     command: bash -c "cd /app/hr_service && python bot.py"
     volumes:
       - ../hr_service:/app/hr_service
-    depends_on:
-      - auth
-      - redis
 
   chat:
     build:
