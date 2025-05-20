@@ -31,17 +31,17 @@ services:
 
   auth:
     build:
-      context: ../
+      context: .
       dockerfile: docker/Dockerfile
     environment:
       UVICORN_PORT: "8001"
     command: >
       sh -c "cd /app/auth_service &&
-      python -m uvicorn main:app --host 0.0.0.0 --port $UVICORN_PORT"
+      python -m uvicorn main:app --host 0.0.0.0 --port $$UVICORN_PORT"
     ports:
       - "8001:8001"
     volumes:
-      - ../auth_service:/app/auth_service
+      - ./auth_service:/app/auth_service
     env_file:
       - .env
     depends_on:
@@ -50,11 +50,11 @@ services:
 
   bot:
     build:
-      context: ..
+      context: .
       dockerfile: docker/Dockerfile
     command: bash -c "cd /app/hr_service && python bot.py"
     volumes:
-      - ../hr_service:/app/hr_service
+      - ./hr_service:/app/hr_service
     env_file:
       - .env
     depends_on:
@@ -63,13 +63,13 @@ services:
 
   chat:
     build:
-      context: ..
+      context: .
       dockerfile: docker/Dockerfile
     command: bash -c "cd /app/hr_service && streamlit run Чат.py --server.port=8501"
     ports:
       - "8501:8501"
     volumes:
-      - ../hr_service:/app/hr_service
+      - ./hr_service:/app/hr_service
     env_file:
       - .env
     depends_on:
@@ -80,13 +80,13 @@ services:
 
   order:
     build:
-      context: ..
+      context: .
       dockerfile: docker/Dockerfile
     command: bash -c "cd /app/user && streamlit run Заказать\\!.py --server.port=8502"
     ports:
       - "8502:8502"
     volumes:
-      - ../user:/app/user
+      - ./user:/app/user
     env_file:
       - .env
     depends_on:
