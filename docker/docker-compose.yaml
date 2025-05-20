@@ -54,9 +54,9 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    command: bash -c "cd /app/frontend_auth && python bot.py"
+    command: bash -c "cd /app/hr_service && python bot.py"
     volumes:
-      - ../frontend_auth:/app/frontend_auth
+      - ../hr_service:/app/hr_service
     depends_on:
       - auth
       - redis
@@ -65,11 +65,11 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    command: bash -c "cd /app/frontend_auth && streamlit run Чат.py --server.port=8501"
+    command: bash -c "cd /app/hr_service && streamlit run Чат.py --server.port=8501"
     ports:
       - "8501:8501"
     volumes:
-      - ../frontend_auth:/app/frontend_auth
+      - ../hr_service:/app/hr_service
     depends_on:
       - auth
 
