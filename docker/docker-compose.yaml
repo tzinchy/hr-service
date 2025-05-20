@@ -49,3 +49,39 @@ services:
       interval: 10s
       timeout: 5s
       retries: 3
+
+  auth_service:
+    build: .
+    command: bash -c "cd /app/auth_service && uv run uvicorn main:app --reload --port $UVICORN_PORT"
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./auth_service:/app/auth_service
+
+  frontend_bot:
+    build: .
+    command: bash -c "cd /app/frontend_auth && uv run bot.py"
+    volumes:
+      - ./frontend_auth:/app/frontend_auth
+    depends_on:
+      - auth_service
+
+  frontend_chat:
+    build: .
+    command: bash -c "cd /app/frontend_auth && uv run streamlit run Чат.py"
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./frontend_auth:/app/frontend_auth
+    depends_on:
+      - auth_service
+
+  user_service:
+    build: .
+    command: bash -c "cd /app/user && uv run streamlit run Заказать\!.py"
+    ports:
+      - "8502:8502"
+    volumes:
+      - ./user:/app/user
+    depends_on:
+      - auth_service
