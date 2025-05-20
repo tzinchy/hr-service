@@ -38,16 +38,15 @@ services:
 
   auth:
     build:
-      context: ..
+      context: .
       dockerfile: docker/Dockerfile
     environment:
-      UVICORN_PORT: "8001"
       DATABASE_URL: "postgresql://user:password@postgres:5432/database"
-    command: bash -c "cd /app/auth_service && python -m uvicorn main:app --reload --port $UVICORN_PORT"
+    command: >
+      sh -c "cd auth_service && 
+      python -m uvicorn main:app --host 0.0.0.0 --port $UVICORN_PORT"
     ports:
       - "8001:8001"
-    volumes:
-      - ../auth_service:/app/auth_service
     depends_on:
       postgres:
         condition: service_healthy
