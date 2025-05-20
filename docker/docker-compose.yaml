@@ -1,18 +1,14 @@
-version: '3.8'  # Можно удалить в новых версиях Docker Compose
-
 services:
   postgres:
     image: postgres:16.2-alpine
-    restart: always
-    ports:
-      - "5432:5432"
     environment:
-      POSTGRES_HOST: postgres
       POSTGRES_USER: user
       POSTGRES_PASSWORD: password
       POSTGRES_DB: database
+    ports:
+      - "5432:5432"
     volumes:
-      - ./workdir/database:/var/lib/postgresql/data
+      - pg_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U user -d database"]
       interval: 5s
@@ -21,9 +17,6 @@ services:
 
   redis:
     image: redis:7.2.4-alpine
-    restart: always
-    ports:
-      - "6379:6379"
     command: redis-server --save 60 1 --loglevel warning
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -31,67 +24,69 @@ services:
       timeout: 3s
       retries: 5
 
-  object_storage:
-    image: minio/minio:latest
-    restart: always
-    ports:
-      - "9000:9000"  # API
-      - "9001:9001"  # Console
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
-      MINIO_BROWSER: "on"
     volumes:
-      - ./workdir/minio/data:/data
-    command: server /data --console-address ":9001"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
+      - minio_data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
 
-  auth_service:
+  auth:
     build:
-      context: .
+      context: ..
       dockerfile: docker/Dockerfile
     environment:
-      UVICORN_PORT: "8001"  # Явно задаем порт
-    command: bash -c "cd auth_service && python -m uvicorn main:app --reload --port $UVICORN_PORT"
+      UVICORN_PORT: "8001"
+      DATABASE_URL: "postgresql://user:password@postgres:5432/database"
+    command: bash -c "cd /app/auth_service && python -m uvicorn main:app --reload --port $UVICORN_PORT"
     ports:
       - "8001:8001"
     volumes:
-      - ./auth_service:/app/auth_service
-
-  frontend_bot:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile
-    command: bash -c "cd frontend_auth && python bot.py"
-    volumes:
-      - ./frontend_auth:/app/frontend_auth
+      - ../auth_service:/app/auth_service
     depends_on:
-      - auth_service
+      postgres:
+        condition: service_healthy
 
-  frontend_chat:
+  bot:
     build:
-      context: .
+      context: ..
       dockerfile: docker/Dockerfile
-    command: bash -c "cd frontend_auth && streamlit run Чат.py --server.port=8501"
+    command: bash -c "cd /app/frontend_auth && python bot.py"
+    volumes:
+      - ../frontend_auth:/app/frontend_auth
+    depends_on:
+      - auth
+      - redis
+
+  chat:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: bash -c "cd /app/frontend_auth && streamlit run Чат.py --server.port=8501"
     ports:
       - "8501:8501"
     volumes:
-      - ./frontend_auth:/app/frontend_auth
+      - ../frontend_auth:/app/frontend_auth
     depends_on:
-      - auth_service
+      - auth
 
-  user_service:
+  order:
     build:
-      context: .
+      context: ..
       dockerfile: docker/Dockerfile
-    command: bash -c "cd user && streamlit run Заказать\!.py --server.port=8502"
+    command: bash -c "cd /app/user && streamlit run Заказать\!.py --server.port=8502"
     ports:
       - "8502:8502"
     volumes:
-      - ./user:/app/user
+      - ../user:/app/user
     depends_on:
-      - auth_service
+      - auth
+
+volumes:
+  pg_data:
+  minio_data:

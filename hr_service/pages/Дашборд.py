@@ -51,8 +51,8 @@ def get_cached_doc_processing_times():
     return get_document_processing_times()
 
 @st.cache_data(ttl=300, show_spinner="Loading candidate history...")
-def get_cached_candidate_history(limit=100):
-    return get_candidate_status_history(limit=limit)
+def get_cached_candidate_history():
+    return get_candidate_status_history()
 
 # Sidebar filters
 def setup_sidebar_filters():
