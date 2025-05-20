@@ -15,15 +15,6 @@ services:
       timeout: 5s
       retries: 5
 
-  redis:
-    image: redis:7.2.4-alpine
-    command: redis-server --save 60 1 --loglevel warning
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
   minio:
     image: minio/minio
     command: server /data --console-address ":9001"
