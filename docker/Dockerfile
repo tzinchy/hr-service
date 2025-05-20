@@ -3,14 +3,14 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Устанавливаем uv (если нужно)
-RUN pip install uv
+# Устанавливаем uv и избегаем предупреждений
+RUN pip install --no-warn-script-location --root-user-action=ignore uv
 
-# Копируем зависимости всех сервисов
-COPY pyproject.toml poetry.lock* ./
+# Создаем общий requirements.txt (если нужно)
+RUN echo "uvicorn\nstreamlit\nfastapi" > requirements.txt  # добавьте свои зависимости
 
-# Устанавливаем зависимости через uv (аналог pip install)
-RUN uv pip install . --no-cache-dir
+# Устанавливаем зависимости через uv
+RUN uv pip install -r requirements.txt --no-cache-dir
 
 # Копируем все сервисы
 COPY auth_service/ ./auth_service/
