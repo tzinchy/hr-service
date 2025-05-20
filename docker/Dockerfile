@@ -14,7 +14,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Копируем только нужные директории
 COPY auth_service/ ./auth_service/
-COPY frontend_auth/ ./frontend_auth/
+COPY hr_service/ ./hr_service/
 COPY user/ ./user/
 
 # Настройка окружения
