@@ -2,28 +2,13 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# Устанавливаем uv без предупреждений
-RUN pip install --no-warn-script-location --root-user-action=ignore uv
-
-# Копируем зависимости (выберите один вариант)
-
-# Вариант A: Если есть единый requirements.txt в корне
+# Устанавливаем зависимости через pip
 COPY requirements.txt .
-RUN uv pip install -r requirements.txt --no-cache-dir
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Вариант B: Если у каждого сервиса свои зависимости
-# COPY auth_service/requirements.txt ./auth_service/
-# COPY frontend_auth/requirements.txt ./frontend_auth/
-# COPY user/requirements.txt ./user/
-# RUN uv pip install -r auth_service/requirements.txt && \
-#     uv pip install -r frontend_auth/requirements.txt && \
-#     uv pip install -r user/requirements.txt
-
-# Копируем код
-COPY auth_service/ ./auth_service/
-COPY frontend_auth/ ./frontend_auth/
-COPY user/ ./user/
+# Копируем весь код
+COPY . .
 
 # Настраиваем окружение
-ENV PYTHONPATH=/app
-ENV UVICORN_PORT=8001
+ENV PYTHONPATH=/app \
+    UVICORN_PORT=8001
