@@ -38,18 +38,17 @@ services:
 
   auth:
     build:
-      context: .
-      dockerfile: docker/Dockerfile
+      context: ../  # Указываем корень проекта как контекст
+      dockerfile: docker/Dockerfile  # Путь относительно контекста
     environment:
-      DATABASE_URL: "postgresql://user:password@postgres:5432/database"
+      UVICORN_PORT: "8001"
     command: >
-      sh -c "cd auth_service && 
+      sh -c "cd /app/auth_service &&
       python -m uvicorn main:app --host 0.0.0.0 --port $UVICORN_PORT"
     ports:
       - "8001:8001"
-    depends_on:
-      postgres:
-        condition: service_healthy
+    volumes:
+      - ../auth_service:/app/auth_service
 
   bot:
     build:
