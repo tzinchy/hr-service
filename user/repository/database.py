@@ -5,26 +5,27 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 import asyncpg
 
 def get_connection():
-    return psycopg2.connect(
-        database=settings.project_management_setting.DB_NAME,
-        host=settings.project_management_setting.DB_HOST,
-        user=settings.project_management_setting.DB_USER,
-        password=settings.project_management_setting.DB_PASSWORD,
-        port=settings.project_management_setting.DB_PORT
-    )
-
-async def get_async_connection():
-    """Get an async database connection"""
-    return await asyncpg.connect(settings.project_management_setting.FOR_ASYNC_URL)
+        return psycopg2.connect(host="postgres",  
+        port="5432",
+        user="user",
+        password="password",
+        database="database")
 
 def get_minio_client():
     """
     Создает и возвращает клиент MinIO с настройками из конфига
     """
     return Minio(
-        endpoint=settings.minio.MINIO_ENDPOINT,  # Обычно "localhost:9000"
-        access_key=settings.minio.MINIO_USER,     # Логин (по умолчанию "minioadmin")
-        secret_key=settings.minio.MINIO_PASSWORD, # Пароль (по умолчанию "minioadmin")
-        secure=False
+        endpoint='minio:9000',  # Обычно "localhost:9000"
+        access_key='minioadmin',  # Логин (по умолчанию "minioadmin")
+        secret_key='minioadmin',  # Пароль (по умолчанию "minioadmin")
+        secure=False,
     )
+
+
+async def get_async_connection():
+    """Get an async database connection"""
+    return await asyncpg.connect(settings.project_management_setting.FOR_ASYNC_URL)
+
+
 
