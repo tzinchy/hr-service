@@ -1,3 +1,5 @@
+version: "3.9"
+
 services:
   postgres:
     image: postgres:16.2-alpine
@@ -21,16 +23,16 @@ services:
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
-    volumes:
-      - minio_data:/data
     ports:
       - "9000:9000"
       - "9001:9001"
+    volumes:
+      - minio_data:/data
 
   auth:
     build:
-      context: ../  # Указываем корень проекта как контекст
-      dockerfile: docker/Dockerfile  # Путь относительно контекста
+      context: ../
+      dockerfile: docker/Dockerfile
     environment:
       UVICORN_PORT: "8001"
     command: >
@@ -40,6 +42,11 @@ services:
       - "8001:8001"
     volumes:
       - ../auth_service:/app/auth_service
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   bot:
     build:
@@ -48,6 +55,11 @@ services:
     command: bash -c "cd /app/hr_service && python bot.py"
     volumes:
       - ../hr_service:/app/hr_service
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   chat:
     build:
@@ -58,20 +70,30 @@ services:
       - "8501:8501"
     volumes:
       - ../hr_service:/app/hr_service
+    env_file:
+      - .env
     depends_on:
-      - auth
+      postgres:
+        condition: service_healthy
+      auth:
+        condition: service_started
 
   order:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    command: bash -c "cd /app/user && streamlit run Заказать\!.py --server.port=8502"
+    command: bash -c "cd /app/user && streamlit run Заказать\\!.py --server.port=8502"
     ports:
       - "8502:8502"
     volumes:
       - ../user:/app/user
+    env_file:
+      - .env
     depends_on:
-      - auth
+      postgres:
+        condition: service_healthy
+      auth:
+        condition: service_started
 
 volumes:
   pg_data:
