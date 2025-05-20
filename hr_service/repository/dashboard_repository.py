@@ -115,8 +115,8 @@ def get_document_processing_times():
     """
     return pd.read_sql(query, get_connection())
 
-def get_candidate_status_history(limit=100):
-    query = f"""
+def get_candidate_status_history():
+    query = """
     SELECT 
         c.candidate_uuid,
         c.first_name || ' ' || c.last_name as name,
@@ -128,6 +128,5 @@ def get_candidate_status_history(limit=100):
     JOIN hr.candidate_status cs ON csh.status_id = cs.status_id
     JOIN auth.user u ON csh.changed_by = u.user_uuid
     ORDER BY csh.changed_at DESC
-    LIMIT {limit}
     """
     return pd.read_sql(query, get_connection())

@@ -1,473 +1,286 @@
 import streamlit as st
-import pandas as pd
-import textwrap
-import logging
-import google.generativeai as genai
-from repository.database import get_connection, get_minio_client
-from frontend_auth.auth import check_auth, get_current_user_data
-from service.email_service import send_invitation_email
-from repository.strml_repository import add_candidate_to_db
-from core.config import GEMINI_API_KEY
+from typing import List, Optional
+from pydantic import BaseModel, Field
+from repository.database import get_connection
 
-# --- Конфигурация приложения ---
-st.set_page_config(layout="wide", page_title="HR Portal - Кандидаты", page_icon="👥")
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# --- Pydantic модели ---
+class Template(BaseModel):
+    template_id: int
+    name: str
+    description: str = Field(default="")
+    markdown_instructions: str = Field(default="")
+    is_required: bool = True
+    processing_days: int = 1
+    order_position: int = 1
 
-# --- Константы ---
-DOCUMENT_STATUSES = {
-    1: ("Не загружен", "❌", "#FF5252"),
-    2: ("Заказан", "🛒", "#FFD740"),
-    3: ("Ожидает проверки", "⏳", "#64B5F6"),
-    4: ("Проверен", "✅", "#4CAF50"),
-    5: ("Отправьте заново", "🔄", "#FF9800")
-}
-
-CANDIDATE_STATUSES = {
-    2: ("Приглашен", "✉️"),
-    3: ("Зарегистрирован", "📝"),
-    5: ("Документы на проверке", "🔍"),
-    7: ("Принят", "✅"),
-    8: ("Отклонен", "❌")
-}
-
-ALLOWED_DOCUMENT_STATUS_CHANGES = {
-    3: [4, 5],
-    5: [3]
-}
-
-ALLOWED_CANDIDATE_STATUS_CHANGES = {
-    5: [7, 8]  # Из "Документы на проверке" можно перейти в "Принят" или "Отклонен"
-}
-
-CANDIDATE_ANALYSIS_PROMPT = """
-Вы - HR-эксперт. Кратко проанализируйте кандидата (максимум 150 слов). 
-Формат:
-1. 🔍 Общая оценка (1-10)
-2. 👍 Сильные стороны
-3. 👎 Проблемы
-4. 💡 Рекомендации
-"""
-
-# --- Инициализация AI ---
-genai.configure(api_key=GEMINI_API_KEY)
-ai_model = genai.GenerativeModel("gemini-1.5-flash")
-
-# --- Функции базы данных ---
-def get_candidate_statuses():
-    with get_connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("SELECT status_id, name FROM hr.candidate_status ORDER BY status_id")
-            return cursor.fetchall()
-
-def get_candidates_list(status_filter=None, search_query=None):
-    with get_connection() as conn:
-        with conn.cursor() as cursor:
-            query = """
-                SELECT 
-                    c.candidate_uuid, c.first_name, c.last_name, c.email,
-                    cs.status_id, cs.name as status, c.notes as candidate_notes,
-                    COUNT(d.document_id) as total_docs,
-                    SUM(CASE WHEN d.status_id = 1 THEN 1 ELSE 0 END) as status_1,
-                    SUM(CASE WHEN d.status_id = 2 THEN 1 ELSE 0 END) as status_2,
-                    SUM(CASE WHEN d.status_id = 3 THEN 1 ELSE 0 END) as status_3,
-                    SUM(CASE WHEN d.status_id = 4 THEN 1 ELSE 0 END) as status_4,
-                    SUM(CASE WHEN d.status_id = 5 THEN 1 ELSE 0 END) as status_5
-                FROM hr.candidate c
-                JOIN hr.candidate_status cs ON c.status_id = cs.status_id
-                LEFT JOIN hr.candidate_document d ON c.candidate_uuid = d.candidate_id
-                WHERE 1=1
-            """
-            params = []
-            if status_filter:
-                query += " AND cs.status_id = %s"
-                params.append(status_filter)
-            if search_query:
-                query += " AND (LOWER(c.first_name) LIKE %s OR LOWER(c.last_name) LIKE %s)"
-                params.extend([f"%{search_query.lower()}%", f"%{search_query.lower()}%"])
-            
-            query += " GROUP BY c.candidate_uuid, c.first_name, c.last_name, c.email, cs.status_id, cs.name, c.notes"
-            query += " ORDER BY c.last_name, c.first_name"
-            
-            cursor.execute(query, params)
-            return pd.DataFrame(cursor.fetchall(), columns=[desc[0] for desc in cursor.description])
-
-def get_candidate_documents(candidate_uuid):
-    with get_connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("""
-                SELECT 
-                    d.document_id, t.name as document_type, d.s3_bucket, d.s3_key,
-                    d.file_size, d.content_type, d.submitted_at, d.status_id, d.notes as document_notes
-                FROM hr.candidate_document d
-                JOIN hr.document_template t ON d.template_id = t.template_id
-                WHERE d.candidate_id = %s
-                ORDER BY t.order_position
-            """, (candidate_uuid,))
-            return pd.DataFrame(cursor.fetchall(), columns=[desc[0] for desc in cursor.description])
-
-def update_document_status(document_id, new_status_id):
-    with get_connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("""
-                UPDATE hr.candidate_document SET status_id = %s WHERE document_id = %s
-            """, (new_status_id, document_id))
-            conn.commit()
-
-def update_candidate_status(candidate_uuid, new_status_id):
-    with get_connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute("""
-                UPDATE hr.candidate SET status_id = %s WHERE candidate_uuid = %s
-            """, (new_status_id, candidate_uuid))
-            conn.commit()
-
-def update_notes(table, id_field, id_value, notes):
-    with get_connection() as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(f"""
-                UPDATE {table} SET notes = %s WHERE {id_field} = %s
-            """, (notes, id_value))
-            conn.commit()
-
-def download_from_minio(bucket, key):
+# --- Операции с БД ---
+def get_all_templates() -> List[Template]:
+    """Получить все шаблоны документов"""
+    conn = get_connection()
     try:
-        if not bucket or not key:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT 
+                    template_id, 
+                    name, 
+                    COALESCE(description, '') as description,
+                    COALESCE(markdown_instructions, '') as markdown_instructions,
+                    is_required, 
+                    processing_days, 
+                    order_position 
+                FROM hr.document_template 
+                ORDER BY order_position
+            """)
+            return [Template.model_validate(dict(zip(
+                ['template_id', 'name', 'description', 'markdown_instructions',
+                 'is_required', 'processing_days', 'order_position'], row)))
+                for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+def get_template_by_id(template_id: int) -> Optional[Template]:
+    """Получить шаблон по ID"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT 
+                    template_id, 
+                    name, 
+                    COALESCE(description, '') as description,
+                    COALESCE(markdown_instructions, '') as markdown_instructions,
+                    is_required, 
+                    processing_days, 
+                    order_position 
+                FROM hr.document_template 
+                WHERE template_id = %s
+            """, (template_id,))
+            if row := cur.fetchone():
+                return Template.model_validate(dict(zip(
+                    ['template_id', 'name', 'description', 'markdown_instructions',
+                     'is_required', 'processing_days', 'order_position'], row)))
             return None
-        minio_client = get_minio_client()
-        response = minio_client.get_object(bucket, key)
-        file_data = response.read()
-        response.close()
-        return file_data
-    except Exception as e:
-        st.error(f"Ошибка загрузки: {str(e)}")
-        return None
+    finally:
+        conn.close()
 
-# --- AI Функции ---
-def generate_compact_analysis(candidate, documents):
+def add_template(template: Template) -> int:
+    """Добавить новый шаблон"""
+    conn = get_connection()
     try:
-        docs_summary = {
-            "completed": len(documents[documents['status_id'] == 4]),
-            "pending": len(documents[documents['status_id'].isin([3, 5])]),
-            "missing": len(documents[documents['status_id'].isin([1, 2])])
-        }
-        
-        prompt = f"""
-        Кандидат: {candidate['first_name']} {candidate['last_name']}
-        Статус: {candidate['status']}
-        Заметки: {textwrap.shorten(candidate.get('candidate_notes', 'нет'), width=100)}
-        
-        Документы:
-        - ✅ Готово: {docs_summary['completed']}
-        - 🔄 В работе: {docs_summary['pending']}
-        - ❌ Отсутствуют: {docs_summary['missing']}
-        
-        {CANDIDATE_ANALYSIS_PROMPT}
-        """
-        
-        response = ai_model.generate_content(prompt)
-        return response.text
-    except Exception as e:
-        logger.error(f"Ошибка AI анализа: {str(e)}")
-        return "Не удалось сгенерировать анализ"
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO hr.document_template 
+                (name, description, markdown_instructions, is_required, 
+                 processing_days, order_position) 
+                VALUES (%s, %s, %s, %s, %s, %s) 
+                RETURNING template_id
+            """, (
+                template.name,
+                template.description if template.description else None,
+                template.markdown_instructions if template.markdown_instructions else None,
+                template.is_required,
+                template.processing_days,
+                template.order_position
+            ))
+            return cur.fetchone()[0]
+    finally:
+        conn.commit()
+        conn.close()
+
+def update_template(template: Template) -> bool:
+    """Обновить существующий шаблон"""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE hr.document_template 
+                SET 
+                    name = %s,
+                    description = %s,
+                    markdown_instructions = %s,
+                    is_required = %s,
+                    processing_days = %s,
+                    order_position = %s
+                WHERE template_id = %s
+            """, (
+                template.name,
+                template.description if template.description else None,
+                template.markdown_instructions if template.markdown_instructions else None,
+                template.is_required,
+                template.processing_days,
+                template.order_position,
+                template.template_id
+            ))
+            return cur.rowcount > 0
+    finally:
+        conn.commit()
+        conn.close()
 
 # --- Компоненты интерфейса ---
-def show_status_badges(status_counts):
-    cols = st.columns(len(DOCUMENT_STATUSES))
-    for idx, (status_id, (name, icon, color)) in enumerate(DOCUMENT_STATUSES.items()):
-        with cols[idx]:
-            count = status_counts.get(f"status_{status_id}", 0)
-            st.markdown(
-                f'<div style="background-color:{color}20; border-radius:6px; padding:6px; '
-                f'text-align:center; border-left:3px solid {color}; margin:2px;">'
-                f'<div style="font-size:14px;">{icon} {count}</div>'
-                f'<div style="font-size:11px;">{name}</div></div>',
-                unsafe_allow_html=True
+def render_template_view(template: Template, edit_mode: bool = False):
+    """Отображение/редактирование шаблона"""
+    if edit_mode:
+        with st.form(f"edit_form_{template.template_id}"):
+            cols = st.columns(2)
+            name = cols[0].text_input("Название*", value=template.name)
+            order_pos = cols[1].number_input(
+                "Позиция", 
+                min_value=1, 
+                value=template.order_position
             )
-
-def show_ai_analysis_popup(candidate, documents):
-    with st.popover("🔍 AI Анализ", use_container_width=True):
-        st.markdown(f"### {candidate['first_name']} {candidate['last_name']}")
-        
-        with st.spinner("Анализируем..."):
-            analysis = generate_compact_analysis(candidate, documents)
-        
-        st.markdown(f"**Результат:**\n\n{analysis}")
-        
-        cols = st.columns(3)
-        with cols[0]:
-            st.metric("✅ Готово", len(documents[documents['status_id'] == 4]))
-        with cols[1]:
-            st.metric("🔄 В работе", len(documents[documents['status_id'].isin([3, 5])]))
-        with cols[2]:
-            st.metric("📋 Всего", len(documents))
-
-def show_candidate_documents(candidate):
-    st.subheader(f"{candidate['first_name']} {candidate['last_name']}")
-    
-    # Отображение и изменение статуса кандидата
-    current_status_id = candidate['status_id']
-    current_status_name, current_status_icon = CANDIDATE_STATUSES.get(current_status_id, ("Неизвестно", "❓"))
-    
-    cols = st.columns([3, 1])
-    with cols[0]:
-        st.markdown(f"### Текущий статус: {current_status_icon} {current_status_name}")
-    
-    # Проверка прав администратора
-    user_data = get_current_user_data()
-    is_admin = user_data and 1 in user_data.get('roles_ids', [])
-    
-    # Изменение статуса кандидата (для админов)
-    if is_admin and current_status_id in ALLOWED_CANDIDATE_STATUS_CHANGES:
-        with cols[1]:
-            with st.popover("🔄 Изменить статус", help="Доступно для администраторов"):
-                new_status_name = st.selectbox(
-                    "Новый статус",
-                    options=[CANDIDATE_STATUSES[s][0] for s in ALLOWED_CANDIDATE_STATUS_CHANGES[current_status_id]],
-                    key=f"status_select_{candidate['candidate_uuid']}"
-                )
-                
-                if st.button("Подтвердить", key=f"confirm_status_{candidate['candidate_uuid']}"):
-                    new_status_id = [k for k, v in CANDIDATE_STATUSES.items() if v[0] == new_status_name][0]
-                    update_candidate_status(candidate['candidate_uuid'], new_status_id)
-                    st.success("Статус кандидата обновлен!")
-                    st.rerun()
-    
-    # Фильтры документов
-    with st.expander("🔍 Фильтры", expanded=False):
-        search_query = st.text_input(
-            "Поиск по документам",
-            key=f"search_{candidate['candidate_uuid']}"
-        )
-        status_filter = st.selectbox(
-            "Статус", 
-            ["Все"] + [s[0] for s in DOCUMENT_STATUSES.values()],
-            key=f"status_filter_{candidate['candidate_uuid']}"
-        )
-    
-    # Получаем и фильтруем документы
-    documents = get_candidate_documents(candidate['candidate_uuid'])
-    if search_query:
-        documents = documents[documents['document_type'].str.contains(search_query, case=False)]
-    if status_filter != "Все":
-        status_id = next(k for k, v in DOCUMENT_STATUSES.items() if v[0] == status_filter)
-        documents = documents[documents['status_id'] == status_id]
-    
-    # Статистика документов
-    show_status_badges({
-        f"status_{k}": len(documents[documents['status_id'] == k])
-        for k in DOCUMENT_STATUSES
-    })
-    
-    # Кнопка AI анализа
-    if st.button("💡 Быстрый анализ", key=f"ai_btn_{candidate['candidate_uuid']}", use_container_width=True):
-        show_ai_analysis_popup(candidate, documents)
-    
-    # Заметки кандидата
-    with st.expander("📝 Заметки", expanded=False):
-        notes = st.text_area(
-            "Редактировать заметки",
-            value=candidate.get('candidate_notes', ''),
-            height=100,
-            key=f"candidate_notes_{candidate['candidate_uuid']}",
-            label_visibility="collapsed"
-        )
-        if st.button(
-            "💾 Сохранить", 
-            key=f"save_notes_{candidate['candidate_uuid']}",
-            use_container_width=True
-        ):
-            update_notes("hr.candidate", "candidate_uuid", candidate['candidate_uuid'], notes)
-            st.rerun()
-    
-    # Список документов
-    with st.container(height=500):
-        for _, doc in documents.iterrows():
-            with st.container(border=True):
-                cols = st.columns([4, 1])
-                
-                # Информация о документе
-                with cols[0]:
-                    status = DOCUMENT_STATUSES[doc['status_id']]
-                    st.markdown(f"**{doc['document_type']}**")
-                    st.caption(f"🗓️ {doc.get('submitted_at', 'нет даты')} | 📦 {doc.get('file_size', 'нет данных')}")
-                    st.markdown(f"{status[1]} {status[0]}")
-                    
-                    # Заметки документа
-                    with st.expander("📝 Заметки", expanded=False):
-                        doc_notes = st.text_area(
-                            "Редактировать",
-                            value=doc.get('document_notes', ''),
-                            height=70,
-                            key=f"doc_notes_{doc['document_id']}",
-                            label_visibility="collapsed"
-                        )
-                        if st.button(
-                            "Сохранить", 
-                            key=f"save_doc_{doc['document_id']}",
-                            use_container_width=True
-                        ):
-                            update_notes("hr.candidate_document", "document_id", doc['document_id'], doc_notes)
-                            st.rerun()
-                
-                # Действия с документом
-                with cols[1]:
-                    # Скачивание
-                    if doc['status_id'] not in [1, 2] and doc['s3_key']:
-                        if st.button(
-                            "⬇️ Скачать",
-                            key=f"dl_{doc['document_id']}",
-                            use_container_width=True
-                        ):
-                            file_data = download_from_minio(doc['s3_bucket'], doc['s3_key'])
-                            if file_data:
-                                st.download_button(
-                                    "Скачать сейчас",
-                                    file_data,
-                                    doc['s3_key'].split('/')[-1],
-                                    doc['content_type'],
-                                    key=f"dl_btn_{doc['document_id']}"
-                                )
-                    
-                    # Изменение статуса документа
-                    if doc['status_id'] in ALLOWED_DOCUMENT_STATUS_CHANGES:
-                        new_status = st.selectbox(
-                            "Новый статус",
-                            [DOCUMENT_STATUSES[s][0] for s in ALLOWED_DOCUMENT_STATUS_CHANGES[doc['status_id']]],
-                            key=f"status_{doc['document_id']}",
-                            label_visibility="collapsed"
-                        )
-                        if st.button(
-                            "🔄 Применить",
-                            key=f"update_{doc['document_id']}",
-                            use_container_width=True
-                        ):
-                            new_id = next(k for k, v in DOCUMENT_STATUSES.items() if v[0] == new_status)
-                            update_document_status(doc['document_id'], new_id)
-                            st.rerun()
-
-# --- Главная страница ---
-def candidates_page():
-    st.title("👥 Управление кандидатами")
-    
-    # Добавление нового кандидата
-    if st.button("➕ Добавить кандидата", use_container_width=True):
-        st.session_state['show_add_form'] = True
-    
-    if st.session_state.get('show_add_form', False):
-        with st.form("add_form"):
-            st.subheader("Новый кандидат")
             
-            cols = st.columns(2)
-            with cols[0]:
-                first_name = st.text_input("Имя*")
-            with cols[1]:
-                last_name = st.text_input("Фамилия*")
+            description = st.text_area(
+                "Описание", 
+                value=template.description,
+                height=100
+            )
             
-            email = st.text_input("Email*")
-            sex = st.selectbox("Пол", ["Мужской", "Женский"])
-            notes = st.text_area("Заметки")
+            markdown = st.text_area(
+                "Инструкция*", 
+                value=template.markdown_instructions,
+                height=300
+            )
             
-            cols = st.columns(2)
-            with cols[0]:
-                if st.form_submit_button("Добавить", type="primary"):
-                    if not first_name or not last_name or not email:
-                        st.error("Заполните обязательные поля")
+            cols = st.columns(3)
+            is_required = cols[0].checkbox(
+                "Обязательный", 
+                value=template.is_required
+            )
+            processing_days = cols[1].number_input(
+                "Срок (дни)", 
+                min_value=1, 
+                value=template.processing_days
+            )
+            
+            submitted = st.form_submit_button("Сохранить изменения")
+            if submitted:
+                if not name or not markdown:
+                    st.error("Заполните обязательные поля (помечены *)")
+                else:
+                    updated = Template(
+                        template_id=template.template_id,
+                        name=name,
+                        description=description,
+                        markdown_instructions=markdown,
+                        is_required=is_required,
+                        processing_days=processing_days,
+                        order_position=order_pos
+                    )
+                    if update_template(updated):
+                        st.success("Шаблон успешно обновлен!")
+                        st.rerun()
                     else:
-                        try:
-                            user_data = get_current_user_data()
-                            candidate_uuid, code = add_candidate_to_db(
-                                first_name=first_name,
-                                last_name=last_name,
-                                email=email,
-                                sex=sex == "Мужской",
-                                tutor_id=user_data['user_uuid'],
-                                notes=notes
-                            )
-                            send_invitation_email(email, code)
-                            st.success("Кандидат добавлен!")
-                            st.session_state['show_add_form'] = False
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Ошибка: {str(e)}")
+                        st.error("Ошибка при обновлении шаблона")
+    else:
+        st.header(template.name)
+        
+        with st.container():
+            st.subheader("Описание документа")
+            if template.description:
+                st.write(template.description)
+            else:
+                st.info("Описание отсутствует")
             
-            with cols[1]:
-                if st.form_submit_button("Отмена"):
-                    st.session_state['show_add_form'] = False
-                    st.rerun()
-        return
-    
-    # Фильтры
-    with st.expander("🔍 Фильтры", expanded=False):
-        cols = st.columns(2)
-        with cols[0]:
-            search = st.text_input("Поиск по имени")
-        with cols[1]:
-            status = st.selectbox(
-                "Статус кандидата", 
-                ["Все"] + [s for s in get_candidate_statuses()],
-                format_func=lambda x: x[1] if x != "Все" else x
+            st.divider()
+            
+            st.subheader("Инструкция по заполнению")
+            if template.markdown_instructions:
+                st.markdown(template.markdown_instructions)
+            else:
+                st.warning("Инструкция не предоставлена")
+            
+            st.divider()
+            
+            cols = st.columns(3)
+            cols[0].metric("Обязательный", "✅ Да" if template.is_required else "❌ Нет")
+            cols[1].metric("Срок обработки", f"📅 {template.processing_days} дн.")
+            cols[2].metric("Позиция", f"🔢 {template.order_position}")
+
+def render_add_template_form():
+    """Форма добавления нового шаблона"""
+    with st.sidebar.expander("➕ Добавить шаблон", expanded=False):
+        with st.form("add_template_form", clear_on_submit=True):
+            name = st.text_input("Название документа*", placeholder="Приказ о приеме на работу")
+            description = st.text_area("Описание", placeholder="Краткое описание назначения документа")
+            markdown_content = st.text_area(
+                "Инструкция по заполнению*", 
+                placeholder="## Заголовок\n\n* Пункт 1\n* Пункт 2",
+                height=200
             )
-    
-    # Список кандидатов
-    candidates = get_candidates_list(
-        status_filter=status[0] if status != "Все" else None,
-        search_query=search if search else None
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                is_required = st.checkbox("Обязательный", value=True)
+            with col2:
+                processing_days = st.number_input("Срок (дни)", min_value=1, value=3)
+            
+            submitted = st.form_submit_button("Сохранить шаблон")
+            
+            if submitted:
+                if not name or not markdown_content:
+                    st.error("Заполните обязательные поля (помечены *)")
+                else:
+                    try:
+                        new_template = Template(
+                            template_id=0,
+                            name=name,
+                            description=description,
+                            markdown_instructions=markdown_content,
+                            is_required=is_required,
+                            processing_days=processing_days,
+                            order_position=len(get_all_templates()) + 1
+                        )
+                        template_id = add_template(new_template)
+                        st.success(f"Шаблон '{name}' успешно сохранён (ID: {template_id})")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Ошибка при сохранении: {str(e)}")
+
+# --- Основной интерфейс ---
+def main():
+    st.set_page_config(
+        page_title="База шаблонов документов HR",
+        layout="wide",
+        initial_sidebar_state="expanded",
+        menu_items={
+            'About': "Система управления шаблонами документов v2.0"
+        }
     )
     
-    if candidates.empty:
-        st.info("Кандидаты не найдены")
-        return
+    st.sidebar.title("📂 Управление шаблонами")
     
-    # Основной макет
-    col1, col2 = st.columns([2, 1], gap="large")
-    
-    with col1:
-        st.subheader("Список кандидатов")
-        with st.container(height=600):
-            for _, candidate in candidates.iterrows():
-                with st.container(border=True):
-                    st.markdown(f"### {candidate['last_name']} {candidate['first_name']}")
-                    status_name, status_icon = CANDIDATE_STATUSES.get(candidate['status_id'], ("Неизвестно", "❓"))
-                    st.caption(f"📧 {candidate['email']} | {status_icon} {status_name}")
-                    
-                    if candidate['total_docs'] > 0:
-                        st.markdown("---")
-                        show_status_badges({
-                            f"status_{k}": candidate.get(f"status_{k}", 0)
-                            for k in DOCUMENT_STATUSES
-                        })
-                    
-                    if st.button(
-                        "Открыть документы",
-                        key=f"open_{candidate['candidate_uuid']}",
-                        use_container_width=True
-                    ):
-                        st.session_state['selected_candidate'] = candidate
-                        st.rerun()
-    
-    with col2:
-        if 'selected_candidate' in st.session_state:
-            show_candidate_documents(st.session_state['selected_candidate'])
-        else:
-            st.info("Выберите кандидата для просмотра документов")
-
-# --- Точка входа ---
-def main():
-    if not check_auth():
-        st.warning("Требуется авторизация")
-        return
-    
-    user_data = get_current_user_data()
-    if not user_data:
-        st.error("Ошибка загрузки данных")
-        return
-    
-    if not set(user_data.get('roles_ids', [])).intersection({1, 2, 3}):
-        st.error("Недостаточно прав")
-        return
-    
-    candidates_page()
+    try:
+        templates = get_all_templates()
+        
+        # Выбор документа
+        selected_template_name = st.sidebar.selectbox(
+            "Выберите документ",
+            options=[t.name for t in templates],
+            index=0 if templates else None,
+            help="Выберите документ для просмотра"
+        )
+        
+        selected_template = next((t for t in templates if t.name == selected_template_name), None)
+        
+        # Кнопки управления
+        col1, col2 = st.sidebar.columns(2)
+        if col1.button("🔄 Обновить список"):
+            st.rerun()
+            
+        edit_mode = col2.checkbox("Режим редактирования", False)
+        
+        # Форма добавления
+        render_add_template_form()
+        
+        # Основное содержимое
+        if not templates:
+            st.info("В системе пока нет шаблонов документов. Добавьте первый шаблон.")
+        elif selected_template:
+            render_template_view(selected_template, edit_mode)
+            
+    except Exception as e:
+        st.error(f"Ошибка при загрузке данных: {str(e)}")
+        st.stop()
 
 if __name__ == "__main__":
     main()

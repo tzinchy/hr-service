@@ -25,6 +25,7 @@ dependencies = [
     "h11==0.14.0",
     "idna==3.10",
     "jwt-tapo44ek==1.0.6",
+    "markdown>=3.8",
     "matplotlib>=3.10.3",
     "minio>=7.2.15",
     "openpyxl>=3.1.5",

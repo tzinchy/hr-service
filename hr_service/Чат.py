@@ -252,7 +252,7 @@ def main():
         st.rerun()
 
 if __name__ == "__main__":
-    if not check_auth():
-        login()
-    else:
-        main()
+    #if not check_auth():
+        #login()
+    #else:
+    main()
