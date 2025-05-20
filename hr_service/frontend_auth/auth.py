@@ -9,7 +9,7 @@ import os
 # Настройки из вашего бэкенда
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 SECRET_KEY = os.getenv("SECRET_KEY")
-BASE_API_URL = "http://localhost:8001/v1/auth"
+BASE_API_URL = "http://auth:8001/v1/auth"
 
 class UserTokenData:
     """Модель данных пользователя из токена"""
