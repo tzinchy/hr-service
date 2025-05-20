@@ -146,7 +146,7 @@ def render_analytics_tab():
 def render_candidates_tab():
     st.header("Candidate Management")
     
-    df_status_history = get_cached_candidate_history(limit=100)
+    df_status_history = get_cached_candidate_history()
     
     if not df_status_history.empty:
         fig = px.timeline(df_status_history, 
