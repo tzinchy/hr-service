@@ -20,12 +20,28 @@ import tempfile
 import io
 from service.bot_service import get_status_text, is_excel_file
 from repository.bot_repositoty import update_document_status, save_location, save_message, create_required_documents, is_user_authorized, get_candidate_uuid_by_chat_id
-
+from urllib.parse import quote
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+def generate_doc_link(doc_name: str, base_url: str = "http://80.74.24.255:8502") -> str:
+    """
+    Генерирует корректную URL-ссылку для документа
+    
+    Параметры:
+    - doc_name: название документа (например, "Паспорт (разворот с фото)")
+    - base_url: базовый URL приложения
+    
+    Возвращает:
+    - Готовую ссылку с правильно закодированным параметром
+    """
+    # Заменяем пробелы на обычные пробелы (не на _) и кодируем один раз
+    encoded_name = quote(doc_name)
+    return f"{base_url.rstrip('/')}/?doc={encoded_name}"
 
 class AuthState(StatesGroup):
     waiting_for_code = State()
@@ -35,7 +51,7 @@ class AuthState(StatesGroup):
     waiting_for_location = State()
     editing_profile = State()
     document_action = State()
-    waiting_for_support_message = State()  # Добавляем новое состояние
+    waiting_for_support_message = State()  
 
 # Инициализация бота
 bot = Bot(token=settings.bot.TELEGRAM_TOKEN)
@@ -336,7 +352,8 @@ async def handle_document_callback(callback: types.CallbackQuery, state: FSMCont
                     return
                 
                 doc_name, status_id, template_id = doc_info
-                
+                                # Формируем ссылку
+                doc_link = generate_doc_link(doc_name)
                 # Создаем клавиатуру с действиями для документа
                 keyboard = []
                 
@@ -378,6 +395,7 @@ async def handle_document_callback(callback: types.CallbackQuery, state: FSMCont
                 await callback.message.edit_text(
                     f"📄 Документ: <b>{doc_name}</b>\n"
                     f"Статус: <b>{get_status_text(status_id)}</b>\n\n"
+                    f"🔗 Инструкция: {doc_link}\n\n"
                     f"Выберите действие:",
                     reply_markup=reply_markup,
                     parse_mode="HTML"

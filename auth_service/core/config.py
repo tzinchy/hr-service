@@ -20,6 +20,8 @@ class ProjectManagementSettings:
 
     ALGORITHM: str = os.environ.get("ALGORITHM")
     SECRET_KEY: str = os.environ.get("SECRET_KEY")
+    URL : str = os.environ.get('USER_URL')
+    MAIN_APP_URL : str = os.environ.get('MAIN_APP_URL')
 
 @dataclass
 class EmailSetting:
@@ -37,10 +39,17 @@ class RedisSetting:
 class MinioSetting: 
     MINIO_USER : str = os.environ.get('MINIO_USER')
     MINIO_PASSWORD : str = os.environ.get('MINIO_PASSWORD')
+    MINIO_ENDPOINT : str = os.environ.get('MINIO_ENDPOINT')
+
 
 @dataclass
 class TelegramBotSetting: 
     TELEGRAM_TOKEN : str = os.environ.get('TELEGRAM_TOKEN')
+
+@dataclass
+class GEMINI: 
+    GEMINI_TOKEN : str = os.environ.get('GEMINI_TOKEN')
+
 @dataclass
 class Settings:
     project_management_setting: ProjectManagementSettings = field(default_factory=ProjectManagementSettings)
@@ -48,9 +57,7 @@ class Settings:
     redis : RedisSetting = field(default_factory=RedisSetting)
     minio : MinioSetting = field(default_factory=MinioSetting)
     bot : TelegramBotSetting = field(default_factory=TelegramBotSetting)
+    gemini : GEMINI = field(default_factory=GEMINI)
 
 settings = Settings()
 print(settings.project_management_setting.DATABASE_URL)
-
-RENOVATION_FILE_PATH = './sql/renovation/'
-RECOMMENDATION_FILE_PATH = './sql/recommendation'

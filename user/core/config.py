@@ -21,6 +21,7 @@ class ProjectManagementSettings:
     ALGORITHM: str = os.environ.get("ALGORITHM")
     SECRET_KEY: str = os.environ.get("SECRET_KEY")
     URL : str = os.environ.get('USER_URL')
+    MAIN_APP_URL : str = os.environ.get('MAIN_APP_URL')
 
 @dataclass
 class EmailSetting:

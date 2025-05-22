@@ -3,9 +3,10 @@ from core.config import settings
 from minio import Minio
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 import asyncpg
+from core.config import settings
 
 def get_connection():
-        return psycopg2.connect(host="postgres",  
+        return psycopg2.connect(host=settings.project_management_setting.DB_HOST,  
         port="5432",
         user="user",
         password="password",

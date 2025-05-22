@@ -252,27 +252,43 @@ def main():
     try:
         templates = get_all_templates()
         
+        # Get the document from query parameters
+        query_params = st.experimental_get_query_params()
+        doc_param = query_params.get("doc", [None])[0]
+        
+        # Set default selected template
+        default_index = 0
+        
+        # If doc parameter is provided, try to find matching template
+        if doc_param and templates:
+            for i, template in enumerate(templates):
+                if template.name == doc_param:
+                    default_index = i
+                    break
+        
         # Выбор документа
         selected_template_name = st.sidebar.selectbox(
             "Выберите документ",
             options=[t.name for t in templates],
-            index=0 if templates else None,
+            index=default_index if templates else None,
             help="Выберите документ для просмотра"
         )
         
         selected_template = next((t for t in templates if t.name == selected_template_name), None)
         
-        # Кнопки управления
+        # Update URL when selection changes
+        if selected_template:
+            st.experimental_set_query_params(doc=selected_template.name)
+        
+        # Rest of your code remains the same...
         col1, col2 = st.sidebar.columns(2)
         if col1.button("🔄 Обновить список"):
             st.rerun()
             
-        edit_mode = col2.checkbox("Режим редактирования", False)
+        edit_mode = col2.checkbox("Редактировать", False)
         
-        # Форма добавления
         render_add_template_form()
         
-        # Основное содержимое
         if not templates:
             st.info("В системе пока нет шаблонов документов. Добавьте первый шаблон.")
         elif selected_template:
