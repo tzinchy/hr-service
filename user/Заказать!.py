@@ -30,7 +30,7 @@ def get_all_templates() -> List[Template]:
                     COALESCE(markdown_instructions, '') as markdown_instructions,
                     is_required, 
                     processing_days, 
-                    order_position 
+                    order_position
                 FROM hr.document_template 
                 ORDER BY order_position
             """)

@@ -5,12 +5,13 @@ from datetime import datetime, timedelta
 from functools import wraps
 from typing import List, Optional
 import os
+from core.config import settings
 
 # Настройки из вашего бэкенда
 ALGORITHM = os.getenv("ALGORITHM", "HS256")
 SECRET_KEY = os.getenv("SECRET_KEY")
-BASE_API_URL = "http://auth:8001/v1/auth"
-
+BASE_API_URL = settings.project_management_setting.AUTH_API_URL
+print(BASE_API_URL)
 class UserTokenData:
     """Модель данных пользователя из токена"""
     def __init__(self, **kwargs):
@@ -38,6 +39,7 @@ def decode_token(token: str) -> Optional[UserTokenData]:
     except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
         return None
 
+
 def check_auth() -> bool:
     """Проверка авторизации пользователя (аналог is_authenticated)"""
     init_auth_session()
@@ -47,7 +49,7 @@ def check_auth() -> bool:
         
     # Проверяем срок действия токена каждые 5 минут
     if not st.session_state.auth.get('last_check') or \
-       (datetime.now() - st.session_state.auth['last_check']) > timedelta(minutes=5):
+       (datetime.now() - st.session_state.auth['last_check']) > timedelta(minutes=160):
         user_data = decode_token(st.session_state.auth['token'])
         if not user_data:
             logout()
@@ -73,7 +75,6 @@ def login():
                     json={"login_or_email": login_or_email, "password": password},
                     timeout=5
                 )
-                
                 if response.status_code == 200:
                     auth_token = response.cookies.get("AuthToken")
                     if auth_token:
@@ -143,7 +144,7 @@ def auth_required(
         return wrapper
     return decorator
 
-# Специализированные декораторы (сохраняем оригинальные названия)
+
 def admin_required(func):
     return auth_required(required_roles=[1])(func)
 

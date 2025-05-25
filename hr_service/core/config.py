@@ -20,6 +20,9 @@ class ProjectManagementSettings:
 
     ALGORITHM: str = os.environ.get("ALGORITHM")
     SECRET_KEY: str = os.environ.get("SECRET_KEY")
+    URL : str = os.environ.get('USER_URL')
+    MAIN_APP_URL : str = os.environ.get('MAIN_APP_URL')
+    AUTH_API_URL : str = os.environ.get('AUTH_API_URL')
 
 @dataclass
 class EmailSetting:
@@ -58,6 +61,8 @@ class Settings:
     gemini : GEMINI = field(default_factory=GEMINI)
 
 settings = Settings()
+print(settings.project_management_setting.DATABASE_URL)
+print(settings.project_management_setting.AUTH_API_URL)
 
 POLLING_INTERVAL = 20
 MESSAGE_PREVIEW_LENGTH = 20  

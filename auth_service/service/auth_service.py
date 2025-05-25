@@ -74,7 +74,7 @@ class AuthService:
                 secure=False,
                 path='/'  
             )
-            self.email_service.send_login_notification(email=user_email, first_name=frontend_payload['first_name'], middle_name=frontend_payload['middle_name'])
+            #self.email_service.send_login_notification(email=user_email, first_name=frontend_payload['first_name'], middle_name=frontend_payload['middle_name'])
             return frontend_payload
         else:
             raise InvalidPasswordException

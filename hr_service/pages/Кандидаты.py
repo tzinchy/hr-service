@@ -13,7 +13,7 @@ from core.config import GEMINI_API_KEY
 st.set_page_config(layout="wide", page_title="HR Portal - Кандидаты", page_icon="👥")
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
+ADMIN_ROLE_ID = 1 
 # --- Константы ---
 DOCUMENT_STATUSES = {
     1: ("Не загружен", "❌", "#FF5252"),
@@ -34,8 +34,7 @@ CANDIDATE_STATUSES = {
 FINAL_STATUSES = [7, 8]  # Статусы, после которых изменения невозможны
 
 ALLOWED_DOCUMENT_STATUS_CHANGES = {
-    3: [4, 5],
-    5: [3]
+    3: [4, 5]
 }
 
 ALLOWED_CANDIDATE_STATUS_CHANGES = {
@@ -60,10 +59,12 @@ def get_candidate_statuses():
             cursor.execute("SELECT status_id, name FROM hr.candidate_status ORDER BY status_id")
             return cursor.fetchall()
 
-def get_candidates_list(status_filter=None, search_query=None):
+def get_candidates_list(tutor_uuid, is_admin, status_filter=None, search_query=None):
     with get_connection() as conn:
         with conn.cursor() as cursor:
-            query = """
+            params = []
+            
+            base_select = """
                 SELECT 
                     c.candidate_uuid, c.first_name, c.last_name, c.email,
                     cs.status_id, cs.name as status, c.notes as candidate_notes,
@@ -78,19 +79,27 @@ def get_candidates_list(status_filter=None, search_query=None):
                 LEFT JOIN hr.candidate_document d ON c.candidate_uuid = d.candidate_id
                 WHERE 1=1
             """
-            params = []
+
+            if not is_admin:
+                base_select += " AND c.tutor_uuid = %s"
+                params.append(tutor_uuid)
+
             if status_filter:
-                query += " AND cs.status_id = %s"
+                base_select += " AND cs.status_id = %s"
                 params.append(status_filter)
+
             if search_query:
-                query += " AND (LOWER(c.first_name) LIKE %s OR LOWER(c.last_name) LIKE %s)"
+                base_select += " AND (LOWER(c.first_name) LIKE %s OR LOWER(c.last_name) LIKE %s)"
                 params.extend([f"%{search_query.lower()}%", f"%{search_query.lower()}%"])
             
-            query += " GROUP BY c.candidate_uuid, c.first_name, c.last_name, c.email, cs.status_id, cs.name, c.notes"
-            query += " ORDER BY c.last_name, c.first_name"
-            
-            cursor.execute(query, params)
+            base_select += """
+                GROUP BY c.candidate_uuid, c.first_name, c.last_name, c.email, cs.status_id, cs.name, c.notes
+                ORDER BY c.last_name, c.first_name
+            """
+
+            cursor.execute(base_select, params)
             return pd.DataFrame(cursor.fetchall(), columns=[desc[0] for desc in cursor.description])
+
 
 def get_candidate_documents(candidate_uuid):
     with get_connection() as conn:
@@ -421,7 +430,10 @@ def show_candidate_documents(candidate):
 # --- Главная страница ---
 def candidates_page():
     st.title("👥 Управление кандидатами")
-    
+    user_data = get_current_user_data()
+    if not user_data:
+        st.error("Ошибка загрузки данных")
+        return
     # Добавление нового кандидата
     if st.button("➕ Добавить кандидата", use_container_width=True):
         st.session_state['show_add_form'] = True
@@ -480,13 +492,16 @@ def candidates_page():
                 ["Все"] + [s for s in get_candidate_statuses()],
                 format_func=lambda x: x[1] if x != "Все" else x
             )
-    
+    is_admin = ADMIN_ROLE_ID in user_data.get('roles_ids')
+    tutor_uuid = user_data.get('user_uuid') if not is_admin else None
     # Список кандидатов
     candidates = get_candidates_list(
+        tutor_uuid=tutor_uuid,
+        is_admin=is_admin,
         status_filter=status[0] if status != "Все" else None,
         search_query=search if search else None
     )
-    
+
     if candidates.empty:
         st.info("Кандидаты не найдены")
         return
@@ -526,18 +541,18 @@ def candidates_page():
 
 # --- Точка входа ---
 def main():
-    #if not check_auth():
-        #st.warning("Требуется авторизация")
-        #return
+    if not check_auth():
+        st.warning("Требуется авторизация")
+        return
     
-    #user_data = get_current_user_data()
-    #if not user_data:
-        #st.error("Ошибка загрузки данных")
-        #return
+    user_data = get_current_user_data()
+    if not user_data:
+        st.error("Ошибка загрузки данных")
+        return
     
-    #if not set(user_data.get('roles_ids', [])).intersection({1, 2, 3}):
-        #st.error("Недостаточно прав")
-        #return
+    if not set(user_data.get('roles_ids', [])).intersection({1, 2, 3}):
+        st.error("Недостаточно прав")
+        return
     
     candidates_page()
 

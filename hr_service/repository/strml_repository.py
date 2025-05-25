@@ -103,45 +103,82 @@ def add_candidate_to_db(first_name: str, last_name: str, email: str, sex: bool, 
                 raise Exception(f"Ошибка при добавлении кандидата: {str(e)}")
 
 
-def get_all_chats(offset: int = 0, limit: int = 20):
+def get_all_chats(tutor_id, role, offset: int = 0, limit: int = 20):
     """Получает список всех чатов с последним сообщением с пагинацией"""
     try:
         with get_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute("""
-                    SELECT 
-                        c.candidate_uuid::text,
-                        c.first_name,
-                        c.last_name,
-                        c.telegram_chat_id::bigint,
-                        cs.name as status,
-                        m.content as last_message,
-                        m.sent_at as last_message_time,
-                        m.is_from_admin as is_last_from_admin,
-                        EXISTS (
-                            SELECT 1 FROM comm.message 
+                if role == 1:
+                    cursor.execute("""
+                        SELECT 
+                            c.candidate_uuid::text,
+                            c.first_name,
+                            c.last_name,
+                            c.telegram_chat_id::bigint,
+                            cs.name as status,
+                            m.content as last_message,
+                            m.sent_at as last_message_time,
+                            m.is_from_admin as is_last_from_admin,
+                            EXISTS (
+                                SELECT 1 FROM comm.message 
+                                WHERE chat_id = c.telegram_chat_id 
+                                AND NOT is_from_admin 
+                                AND sent_at > COALESCE(
+                                    (SELECT last_read FROM comm.chat_status 
+                                    WHERE chat_id = c.telegram_chat_id), 
+                                    '1970-01-01'::timestamp
+                                )
+                            ) as has_unread
+                        FROM hr.candidate c
+                        JOIN hr.candidate_status cs ON c.status_id = cs.status_id
+                        LEFT JOIN comm.telegram_chat tc ON tc.chat_id = c.telegram_chat_id
+                        LEFT JOIN LATERAL (
+                            SELECT content, sent_at, is_from_admin 
+                            FROM comm.message 
                             WHERE chat_id = c.telegram_chat_id 
-                            AND NOT is_from_admin 
-                            AND sent_at > COALESCE(
-                                (SELECT last_read FROM comm.chat_status 
-                                 WHERE chat_id = c.telegram_chat_id), 
-                                '1970-01-01'::timestamp
-                            )
-                        ) as has_unread
-                    FROM hr.candidate c
-                    JOIN hr.candidate_status cs ON c.status_id = cs.status_id
-                    LEFT JOIN comm.telegram_chat tc ON tc.chat_id = c.telegram_chat_id
-                    LEFT JOIN LATERAL (
-                        SELECT content, sent_at, is_from_admin 
-                        FROM comm.message 
-                        WHERE chat_id = c.telegram_chat_id 
-                        ORDER BY sent_at DESC 
-                        LIMIT 1
-                    ) m ON true
-                    WHERE c.telegram_chat_id IS NOT NULL
-                    ORDER BY COALESCE(m.sent_at, '1970-01-01'::timestamp) DESC
-                    LIMIT %s OFFSET %s
-                """, (limit, offset))
+                            ORDER BY sent_at DESC 
+                            LIMIT 1
+                        ) m ON true
+                        WHERE c.telegram_chat_id IS NOT NULL
+                        ORDER BY COALESCE(m.sent_at, '1970-01-01'::timestamp) DESC
+                        LIMIT %s OFFSET %s
+                    """, (limit, offset))
+                else: 
+                    cursor.execute("""
+                        SELECT 
+                            c.candidate_uuid::text,
+                            c.first_name,
+                            c.last_name,
+                            c.telegram_chat_id::bigint,
+                            cs.name as status,
+                            m.content as last_message,
+                            m.sent_at as last_message_time,
+                            m.is_from_admin as is_last_from_admin,
+                            EXISTS (
+                                SELECT 1 FROM comm.message 
+                                WHERE chat_id = c.telegram_chat_id 
+                                AND NOT is_from_admin 
+                                AND sent_at > COALESCE(
+                                    (SELECT last_read FROM comm.chat_status 
+                                    WHERE chat_id = c.telegram_chat_id), 
+                                    '1970-01-01'::timestamp
+                                )
+                            ) as has_unread
+                        FROM hr.candidate c
+                        JOIN hr.candidate_status cs ON c.status_id = cs.status_id
+                        LEFT JOIN comm.telegram_chat tc ON tc.chat_id = c.telegram_chat_id
+                        LEFT JOIN LATERAL (
+                            SELECT content, sent_at, is_from_admin 
+                            FROM comm.message 
+                            WHERE chat_id = c.telegram_chat_id 
+                            ORDER BY sent_at DESC 
+                            LIMIT 1
+                        ) m ON true
+                        WHERE c.telegram_chat_id IS NOT NULL
+                        AND c.tutor_uuid = %s 
+                        ORDER BY COALESCE(m.sent_at, '1970-01-01'::timestamp) DESC
+                        LIMIT %s OFFSET %s
+                    """, (tutor_id, limit, offset))
                 columns = [desc[0] for desc in cursor.description]
                 return pd.DataFrame(cursor.fetchall(), columns=columns)
     except Exception as e:

@@ -27,7 +27,48 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+async def update_document_in_db(document_id: str, bucket: str, key: str, content_type: str, file_size: int) -> bool:
+    """Обновляет информацию о документе в базе данных"""
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    UPDATE hr.candidate_document
+                    SET 
+                        s3_bucket = %s,
+                        s3_key = %s,
+                        content_type = %s,
+                        file_size = %s,
+                        submitted_at = NOW(),
+                        updated_at = NOW()
+                    WHERE document_id = %s
+                    RETURNING 1
+                """, (bucket, key, content_type, file_size, document_id))
+                return bool(cursor.fetchone())
+    except Exception as e:
+        logger.error(f"Error updating document in DB: {e}")
+        return False
 
+async def upload_to_minio(bucket: str, key: str, file_bytes: bytes, content_type: str) -> bool:
+    """Загружает файл в MinIO"""
+    try:
+        minio_client = get_minio_client()
+        
+        if not minio_client.bucket_exists(bucket):
+            minio_client.make_bucket(bucket)
+        
+        minio_client.put_object(
+            bucket,
+            key,
+            io.BytesIO(file_bytes),
+            length=len(file_bytes),
+            content_type=content_type
+        )
+        return True
+    except Exception as e:
+        logger.error(f"Error uploading to MinIO: {e}")
+        return False
+    
 def generate_doc_link(doc_name: str, base_url: str = "http://80.74.24.255:8502") -> str:
     """
     Генерирует корректную URL-ссылку для документа
@@ -332,7 +373,7 @@ async def cmd_docs(message: Message, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("doc_"))
 async def handle_document_callback(callback: types.CallbackQuery, state: FSMContext):
-    """Обработка выбора документа через callback"""
+    """Обработка выбора документа"""
     document_id = callback.data.split("_")[1]
     chat_id = callback.message.chat.id
     
@@ -340,7 +381,7 @@ async def handle_document_callback(callback: types.CallbackQuery, state: FSMCont
         with get_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("""
-                    SELECT t.name, d.status_id, d.template_id
+                    SELECT t.name, d.status_id, d.template_id, d.s3_bucket, d.s3_key
                     FROM hr.candidate_document d
                     JOIN hr.document_template t ON d.template_id = t.template_id
                     WHERE d.document_id = %s
@@ -351,34 +392,30 @@ async def handle_document_callback(callback: types.CallbackQuery, state: FSMCont
                     await callback.answer("Документ не найден")
                     return
                 
-                doc_name, status_id, template_id = doc_info
-                                # Формируем ссылку
+                doc_name, status_id, template_id, s3_bucket, s3_key = doc_info
                 doc_link = generate_doc_link(doc_name)
-                # Создаем клавиатуру с действиями для документа
+                
+                # Формируем клавиатуру с действиями
                 keyboard = []
                 
-                # Для статусов "Не загружен", "Заказан" и "Требуется новый вариант" показываем кнопку загрузки
                 if status_id in [1, 2, 5]:
                     keyboard.append([InlineKeyboardButton(
                         text="📤 Загрузить документ", 
                         callback_data=f"upload_{document_id}"
                     )])
                 
-                # Для статуса "Не загружен" показываем кнопку "Заказан"
                 if status_id == 1:
                     keyboard.append([InlineKeyboardButton(
                         text="🛒 Отметить как заказанный", 
                         callback_data=f"order_{document_id}"
                     )])
                 
-                # Для статусов "Ожидает проверки" и "Проверен" показываем кнопку скачивания
-                if status_id in [3, 4]:
+                if status_id in [3, 4] and s3_bucket and s3_key:
                     keyboard.append([InlineKeyboardButton(
                         text="⬇️ Скачать документ", 
                         callback_data=f"download_{document_id}"
                     )])
                 
-                # Для статуса "Проверен" показываем кнопку запроса новой загрузки
                 if status_id == 4:
                     keyboard.append([InlineKeyboardButton(
                         text="🔄 Запросить новый вариант", 
@@ -409,7 +446,6 @@ async def handle_document_callback(callback: types.CallbackQuery, state: FSMCont
                 }, doc_name=doc_name)
                 
                 await callback.answer()
-                
     except Exception as e:
         logger.error(f"Error handling document callback: {e}")
         await callback.answer("⚠️ Произошла ошибка")
@@ -573,6 +609,7 @@ async def handle_bank_statement(message: Message, state: FSMContext):
     """Обработка выписки банка"""
     await save_message(message.chat.id, "Пользователь загрузил файл", False)
     document = message.document
+    chat_id = message.chat.id
     
     if not is_excel_file(document.file_name):
         await message.answer("❌ Пожалуйста, загрузите файл Excel (.xlsx или .xls)")
@@ -581,7 +618,6 @@ async def handle_bank_statement(message: Message, state: FSMContext):
     data = await state.get_data()
     selected_doc = data.get('selected_doc')
     doc_name = data.get('doc_name')
-    chat_id = message.chat.id
     
     if not selected_doc:
         await message.answer("⚠️ Документ не выбран.")
@@ -594,41 +630,50 @@ async def handle_bank_statement(message: Message, state: FSMContext):
         await state.clear()
         return
     
-    await message.answer("⏳ Обрабатываю файл с банковскими выписками...")
+    await message.answer("⏳ Обрабатываю файл...")
     
     try:
+        # Скачиваем файл
         file = await bot.get_file(document.file_id)
         file_path = os.path.join(tempfile.gettempdir(), document.file_name)
         await bot.download_file(file.file_path, file_path)
         
-        # Проверка, что файл действительно Excel
-        if not is_excel_file(file_path):
-            await message.answer("❌ Загруженный файл не является Excel документом.")
+        # Проверка файла
+        with open(file_path, 'rb') as f:
+            file_bytes = f.read()
+        
+        if len(file_bytes) == 0:
+            await message.answer("❌ Загруженный файл пуст.")
             os.remove(file_path)
             return
         
-        # Обработка файла
-        minio_client = get_minio_client()
-        with open(file_path, 'rb') as file_obj:
-            file_bytes = file_obj.read()
-        
-        file_extension = document.file_name.split('.')[-1] if document.file_name else 'xlsx'
-        s3_key = f"{candidate_uuid}/{selected_doc['id']}.{file_extension}"
+        # Подготовка данных для MinIO
+        file_extension = document.file_name.split('.')[-1] if '.' in document.file_name else 'xlsx'
         bucket_name = "candidates"
+        s3_key = f"{candidate_uuid}/{selected_doc['id']}.{file_extension}"
+        content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         
-        if not minio_client.bucket_exists(bucket_name):
-            minio_client.make_bucket(bucket_name)
+        # Загрузка в MinIO
+        if not await upload_to_minio(bucket_name, s3_key, file_bytes, content_type):
+            await message.answer("⚠️ Ошибка при загрузке файла в хранилище.")
+            os.remove(file_path)
+            return
         
-        minio_client.put_object(
+        # Обновление базы данных
+        if not await update_document_in_db(
+            selected_doc['id'],
             bucket_name,
             s3_key,
-            io.BytesIO(file_bytes),
-            length=len(file_bytes),
-            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+            content_type,
+            len(file_bytes)
+        ):
+            await message.answer("⚠️ Файл загружен, но не удалось обновить базу данных.")
+            os.remove(file_path)
+            return
         
+        # Обновление статуса
         if await update_document_status(selected_doc['id'], 3, chat_id, doc_name):
-            await message.answer(f"✅ Файл '{doc_name}' успешно загружен и отправлен на проверку!")
+            await message.answer(f"✅ Файл '{doc_name}' успешно загружен!")
             await state.clear()
             await cmd_docs(message, state)
         else:
@@ -646,8 +691,8 @@ async def handle_bank_statement(message: Message, state: FSMContext):
 async def handle_document_upload(message: Message, state: FSMContext):
     """Обработка загрузки документа"""
     await save_message(message.chat.id, "Пользователь загрузил файл", False)
-    chat_id = message.chat.id
     document = message.document
+    chat_id = message.chat.id
     data = await state.get_data()
     selected_doc = data.get('selected_doc')
     doc_name = data.get('doc_name')
@@ -666,35 +711,48 @@ async def handle_document_upload(message: Message, state: FSMContext):
     await message.answer("⏳ Загружаю документ...")
     
     try:
-        minio_client = get_minio_client()
+        # Получаем файл
         file = await bot.get_file(document.file_id)
         file_bytes = await bot.download_file(file.file_path)
         
         if isinstance(file_bytes, io.BytesIO):
             file_bytes = file_bytes.getvalue()
         
-        file_extension = document.file_name.split('.')[-1] if document.file_name else 'bin'
-        s3_key = f"{candidate_uuid}/{selected_doc['id']}.{file_extension}"
+        # Проверки
+        if len(file_bytes) == 0:
+            await message.answer("❌ Загруженный файл пуст.")
+            return
+        
+        # Подготовка данных для MinIO
+        file_extension = document.file_name.split('.')[-1] if '.' in document.file_name else 'bin'
         bucket_name = "candidates"
+        s3_key = f"{candidate_uuid}/{selected_doc['id']}.{file_extension}"
+        content_type = document.mime_type or "application/octet-stream"
         
-        if not minio_client.bucket_exists(bucket_name):
-            minio_client.make_bucket(bucket_name)
+        # Загрузка в MinIO
+        if not await upload_to_minio(bucket_name, s3_key, file_bytes, content_type):
+            await message.answer("⚠️ Ошибка при загрузке файла в хранилище.")
+            return
         
-        minio_client.put_object(
+        # Обновление базы данных
+        if not await update_document_in_db(
+            selected_doc['id'],
             bucket_name,
             s3_key,
-            io.BytesIO(file_bytes),
-            length=len(file_bytes),
-            content_type=document.mime_type
-        )
+            content_type,
+            len(file_bytes)
+        ):
+            await message.answer("⚠️ Документ загружен, но не удалось обновить базу данных.")
+            return
         
+        # Обновление статуса
         if await update_document_status(selected_doc['id'], 3, chat_id, doc_name):
-            await message.answer(f"✅ Документ '{doc_name}' успешно загружен и отправлен на проверку!")
+            await message.answer(f"✅ Документ '{doc_name}' успешно загружен!")
             await state.clear()
             await cmd_docs(message, state)
         else:
             await message.answer("⚠️ Документ загружен, но не удалось обновить статус.")
-        
+            
     except Exception as e:
         logger.error(f"Error uploading document: {e}")
         await message.answer("⚠️ Произошла ошибка при загрузке документа.")

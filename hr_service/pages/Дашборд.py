@@ -20,6 +20,7 @@ st.set_page_config(
     page_icon="📊",
     layout="wide"
 )
+from frontend_auth.auth import admin_required, auth_required
 
 # Cache configuration
 @st.cache_data(ttl=3600, show_spinner="Loading location data...")
@@ -110,7 +111,7 @@ def render_locations_tab():
     else:
         st.warning("No location data available")
 
-# Tab 2: HR Analytics
+@admin_required
 def render_analytics_tab():
     st.header("HR Analytics")
     
@@ -161,7 +162,7 @@ def render_candidates_tab():
     else:
         st.info("No candidate status history available")
 
-# Tab 4: Documents
+@admin_required
 def render_documents_tab():
     st.header("Document Processing")
     
@@ -194,13 +195,13 @@ def render_documents_tab():
 
 # Main dashboard
 def main():
+    auth_required()
     st.title("HR Analytics Dashboard")
     date_range = setup_sidebar_filters()
     
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab4 = st.tabs([
         "📍 Employee Locations", 
         "📊 HR Analytics",
-        "👥 Candidates",
         "📄 Documents"
     ])
     
@@ -209,9 +210,6 @@ def main():
     
     with tab2:
         render_analytics_tab()
-    
-    with tab3:
-        render_candidates_tab()
     
     with tab4:
         render_documents_tab()

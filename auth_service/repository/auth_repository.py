@@ -29,6 +29,7 @@ class AuthRepository:
                 select(User.user_uuid).where(User.login == login)
             )
             result = query_result.scalar_one_or_none()
+            print(result)
             return result
 
     async def get_password_by_uuid(self, user_uuid: str) -> str:
@@ -39,6 +40,7 @@ class AuthRepository:
             result = (
                 query_result.scalar_one()
             )  
+            print(result)
             return result
 
     async def get_email_by_user_uuid(self, user_uuid: str) -> EmailStr:
@@ -46,6 +48,7 @@ class AuthRepository:
             query_result = await session.execute(
                 select(User.email).where(User.user_uuid == user_uuid)
             )
+            print(user_uuid)
             result = query_result.scalar_one_or_none()
             print(result)
             return result
@@ -82,11 +85,14 @@ class AuthRepository:
 
     async def get_user_backend_payload(self, user_uuid):
         async with self.db() as session:
+            print('GET BACKEND PAYLOAD FUNC', user_uuid)
             query_result = await session.execute(
-                select(UserBackendPayload).where(user_uuid == user_uuid)
+                select(UserBackendPayload).where(UserBackendPayload.user_uuid == user_uuid)
             )
-            result = query_result.scalars().first()
-            return result.as_dict()
+            result = query_result.scalars().all()
+            for i in result:
+                print('BACKEND PAYLOAD', i.as_dict())
+            return result[0].as_dict()
 
     async def get_user_frontend_payload(self, user_uuid):
         async with self.db() as session:
@@ -103,6 +109,7 @@ class AuthRepository:
                 ).where(UserFrontendPayload.user_uuid == user_uuid)
             )
             result = [dict(row) for row in query_result.mappings().all()][0]
+            print(result)
             return result
     async def get_user_first_name_by_uuid(self, user_uuid):
         async with self.db() as session: 

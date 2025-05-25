@@ -15,7 +15,7 @@ def get_minio_client():
     Создает и возвращает клиент MinIO с настройками из конфига
     """
     return Minio(
-        endpoint='minio:9000',  # Обычно "localhost:9000"
+        endpoint=settings.minio.MINIO_ENDPOINT,  # Обычно "localhost:9000"
         access_key='minioadmin',  # Логин (по умолчанию "minioadmin")
         secret_key='minioadmin',  # Пароль (по умолчанию "minioadmin")
         secure=False,

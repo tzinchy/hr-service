@@ -3,38 +3,14 @@ import pandas as pd
 from repository.database import get_connection
 
 def get_df_locations():
-    query = """SELECT 
-    u.user_uuid,
-    u.first_name || ' ' || u.last_name as name,
-    u.email,
-    cl.latitude,
-    cl.longitude,
-    'employee' as type,
-    pl.position as position,
-    d.department,
-    m.management,
-    dv.division
-    FROM auth.user u
-    JOIN hr.candidate_location cl ON u.user_uuid = cl.candidate_uuid
-    LEFT JOIN auth.position p ON p.position_id = ANY(u.positions_ids)
-    LEFT JOIN auth.position_list pl ON p.position_list_id = pl.position_list_id
-    LEFT JOIN auth.division dv ON p.division_id = dv.division_id
-    LEFT JOIN auth.management m ON p.management_id = m.management_id
-    LEFT JOIN auth.department d ON m.department_id = d.department_id
-
-    UNION ALL
-
+    query = """
     SELECT 
     c.candidate_uuid,
     c.first_name || ' ' || c.last_name as name,
     c.email,
     cl.latitude,
     cl.longitude,
-    'candidate' as type,
-    NULL as position,
-    NULL as department,
-    NULL as management,
-    NULL as division
+    'candidate' as type
     FROM hr.candidate c
     JOIN hr.candidate_location cl ON c.candidate_uuid = cl.candidate_uuid
     WHERE c.status_id NOT IN (SELECT status_id FROM hr.candidate_status WHERE is_final = true)

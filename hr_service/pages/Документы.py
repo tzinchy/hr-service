@@ -2,7 +2,8 @@ import streamlit as st
 from typing import List, Optional
 from pydantic import BaseModel, Field
 from repository.database import get_connection
-
+from urllib.parse import quote, unquote
+from frontend_auth.auth import admin_required, auth_required
 # --- Pydantic модели ---
 class Template(BaseModel):
     template_id: int
@@ -63,6 +64,7 @@ def get_template_by_id(template_id: int) -> Optional[Template]:
     finally:
         conn.close()
 
+@admin_required
 def add_template(template: Template) -> int:
     """Добавить новый шаблон"""
     conn = get_connection()
@@ -195,7 +197,7 @@ def render_template_view(template: Template, edit_mode: bool = False):
             cols[0].metric("Обязательный", "✅ Да" if template.is_required else "❌ Нет")
             cols[1].metric("Срок обработки", f"📅 {template.processing_days} дн.")
             cols[2].metric("Позиция", f"🔢 {template.order_position}")
-
+@admin_required
 def render_add_template_form():
     """Форма добавления нового шаблона"""
     with st.sidebar.expander("➕ Добавить шаблон", expanded=False):
@@ -236,7 +238,7 @@ def render_add_template_form():
                     except Exception as e:
                         st.error(f"Ошибка при сохранении: {str(e)}")
 
-# --- Основной интерфейс ---
+@admin_required
 def main():
     st.set_page_config(
         page_title="База шаблонов документов HR",
@@ -252,39 +254,38 @@ def main():
     try:
         templates = get_all_templates()
         
-        # Get the document from query parameters
-        query_params = st.experimental_get_query_params()
-        doc_param = query_params.get("doc", [None])[0]
-        
-        # Set default selected template
+        # Получаем параметр из URL
+        query_params = st.query_params
+        doc_param = unquote(query_params.get("doc", "")) if "doc" in query_params else None
+
+        # Устанавливаем индекс по умолчанию
         default_index = 0
         
-        # If doc parameter is provided, try to find matching template
+        # Если есть параметр doc — определяем соответствующий шаблон
         if doc_param and templates:
             for i, template in enumerate(templates):
                 if template.name == doc_param:
                     default_index = i
                     break
         
-        # Выбор документа
+        # Выпадающий список для выбора документа
         selected_template_name = st.sidebar.selectbox(
             "Выберите документ",
             options=[t.name for t in templates],
-            index=default_index if templates else None,
+            index=default_index if templates else 0,
             help="Выберите документ для просмотра"
         )
         
         selected_template = next((t for t in templates if t.name == selected_template_name), None)
         
-        # Update URL when selection changes
+        # Обновляем URL
         if selected_template:
-            st.experimental_set_query_params(doc=selected_template.name)
+            st.query_params["doc"] = quote(selected_template.name)
         
-        # Rest of your code remains the same...
         col1, col2 = st.sidebar.columns(2)
         if col1.button("🔄 Обновить список"):
             st.rerun()
-            
+        
         edit_mode = col2.checkbox("Редактировать", False)
         
         render_add_template_form()
@@ -297,6 +298,7 @@ def main():
     except Exception as e:
         st.error(f"Ошибка при загрузке данных: {str(e)}")
         st.stop()
+
 
 if __name__ == "__main__":
     main()
