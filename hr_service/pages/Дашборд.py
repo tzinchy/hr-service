@@ -20,7 +20,7 @@ st.set_page_config(
     page_icon="📊",
     layout="wide"
 )
-from frontend_auth.auth import admin_required, auth_required
+from frontend_auth.auth import admin_required, auth_required, check_auth
 
 # Cache configuration
 @st.cache_data(ttl=3600, show_spinner="Loading location data...")
@@ -143,25 +143,6 @@ def render_analytics_tab():
     else:
         st.info("No document processing data available")
 
-# Tab 3: Candidates
-def render_candidates_tab():
-    st.header("Candidate Management")
-    
-    df_status_history = get_cached_candidate_history()
-    
-    if not df_status_history.empty:
-        fig = px.timeline(df_status_history, 
-                         x_start="changed_at", 
-                         x_end=df_status_history["changed_at"] + pd.Timedelta(hours=1),
-                         y="name", 
-                         color="status",
-                         title="Candidate Status Changes",
-                         hover_data=["changed_by"])
-        st.plotly_chart(fig, use_container_width=True)
-        st.dataframe(df_status_history)
-    else:
-        st.info("No candidate status history available")
-
 @admin_required
 def render_documents_tab():
     st.header("Document Processing")
@@ -195,7 +176,7 @@ def render_documents_tab():
 
 # Main dashboard
 def main():
-    auth_required()
+    check_auth()
     st.title("HR Analytics Dashboard")
     date_range = setup_sidebar_filters()
     
