@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 import logging
-from frontend_auth.auth import check_auth, login, logout, get_current_user_data
+from frontend_auth.auth import check_auth, login, logout, get_current_user_data, hide_pages, ADMIN_ROLE
 from core.config import MESSAGE_PREVIEW_LENGTH
 from service.gemini_service import generate_expert_response
 from repository.strml_repository import get_all_chats, save_message
@@ -82,8 +82,8 @@ def initialize_session_state():
         if key not in st.session_state:
             st.session_state[key] = value
 
-def main():
-    st.set_page_config(page_title="Чат с кандидатами", layout="wide")
+def chat():
+    
     st.title("💬 Чат с кандидатами")
 
     # Получаем данные пользователя
@@ -92,7 +92,8 @@ def main():
     if not user_data:
         logout()
         st.stop()
-
+    if user_data and ADMIN_ROLE not in user_data.get('roles_ids', []):
+        hide_pages(["1_📊_Дашборд", "2_📄_Документы"])
     # Проверяем роли
     is_admin = ADMIN_ROLE_ID in user_data.get('roles_ids')
     print(user_data)
@@ -101,10 +102,6 @@ def main():
     print(is_admin)
     print(tutor_id)
     print(st.session_state)
-
-    with st.sidebar:
-        if st.button("Выйти из системы"):
-            logout()
 
     initialize_session_state()
 
@@ -206,9 +203,3 @@ def main():
                 st.error(f"Ошибка: {str(e)}")
                 logger.error(f"Ошибка отправки: {e}")
 
-if __name__ == "__main__":
-    if not check_auth():
-        check_auth()
-        login()
-    else:
-        main()

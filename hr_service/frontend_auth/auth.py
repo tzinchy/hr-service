@@ -178,7 +178,67 @@ def get_current_user_data() -> Optional[dict]:
         st.error(f"Ошибка декодирования токена: {str(e)}")
         return None
     
-# Явно указываем какие функции экспортируем
+# Добавьте в ваш auth.py (или создайте новый файл permissions.py)
+
+
+def page_access_control(required_roles: List[int] = None):
+    """Декоратор для контроля доступа к страницам"""
+    def decorator(page_func):
+        @wraps(page_func)
+        def wrapper(*args, **kwargs):
+            # Проверка авторизации
+            if not check_auth():
+                st.warning("Пожалуйста, войдите в систему")
+                login()
+                st.stop()
+            
+            # Проверка ролей
+            if required_roles:
+                user_data = get_current_user_data()
+                if not user_data:
+                    logout()
+                    st.stop()
+                
+                user_roles = user_data.get('roles_ids', [])
+                if not any(role in user_roles for role in required_roles):
+                    st.error("У вас нет доступа к этой странице")
+                    st.stop()
+            
+            return page_func(*args, **kwargs)
+        return wrapper
+    return decorator
+
+# Константы для ролей (лучше вынести в config.py)
+ADMIN_ROLE = 1
+HR_ROLE = 3
+
+# Добавьте в auth.py
+def hide_pages(pages: List[str]):
+    """Скрывает указанные страницы из навигации"""
+    if not check_auth():
+        return
+    
+    user_data = get_current_user_data()
+    if not user_data:
+        return
+    
+    for page in pages:
+        if page in st.session_state.get('pages', {}):
+            del st.session_state.pages[page]
+
+
+def should_show_page(required_roles: List[int] = None) -> bool:
+    """Проверяет, должен ли пользователь видеть страницу"""
+    if not check_auth():
+        return False
+    
+    if required_roles:
+        user_data = get_current_user_data()
+        if not user_data or not any(role in user_data.get('roles_ids', []) for role in required_roles):
+            return False
+    
+    return True
+
 __all__ = [
     'check_auth',
     'hr_user_required',

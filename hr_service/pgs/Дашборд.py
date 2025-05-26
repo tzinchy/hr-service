@@ -14,44 +14,38 @@ from repository.dashboard_repository import (
     get_candidate_status_history
 )
 
-# Page configuration
-st.set_page_config(
-    page_title="HR Analytics Dashboard",
-    page_icon="📊",
-    layout="wide"
-)
-from frontend_auth.auth import admin_required, auth_required, check_auth
+from frontend_auth.auth import check_auth, login, admin_required
 
 # Cache configuration
-@st.cache_data(ttl=3600, show_spinner="Loading location data...")
+@st.cache_data(ttl=3600, show_spinner="Загружаем локации...")
 def get_cached_locations():
     return get_df_locations()
 
-@st.cache_data(ttl=600, show_spinner="Loading pending documents...")
+@st.cache_data(ttl=600, show_spinner="Загружаем выбранный документ...")
 def get_cached_pending_docs():
     return get_pending_docs()
 
-@st.cache_data(ttl=600, show_spinner="Loading documents by type...")
+@st.cache_data(ttl=600, show_spinner="Загружаем документы по типу...")
 def get_cached_documents_by_type():
     return get_documents_by_type()
 
-@st.cache_data(ttl=600, show_spinner="Loading documents by status...")
+@st.cache_data(ttl=600, show_spinner="Загружаем документы по статусу...")
 def get_cached_documents_by_status():
     return get_documents_by_type_by_status()
 
-@st.cache_data(ttl=600, show_spinner="Loading department data...")
+@st.cache_data(ttl=600, show_spinner="Загружаем информацию по департаменту...")
 def get_cached_employees_by_dept():
     return get_employees_by_department()
 
-@st.cache_data(ttl=600, show_spinner="Loading candidate status data...")
+@st.cache_data(ttl=600, show_spinner="Загружаем стаутсы кандидатов...")
 def get_cached_candidates_by_status():
     return get_candidates_by_status()
 
-@st.cache_data(ttl=600, show_spinner="Loading document processing times...")
+@st.cache_data(ttl=600, show_spinner="Загржуаем среднее время для заказа документов...")
 def get_cached_doc_processing_times():
     return get_document_processing_times()
 
-@st.cache_data(ttl=300, show_spinner="Loading candidate history...")
+@st.cache_data(ttl=300, show_spinner="Загружаем историю канидата...")
 def get_cached_candidate_history():
     return get_candidate_status_history()
 
@@ -109,7 +103,7 @@ def render_locations_tab():
         # Data table
         st.dataframe(df_locations)
     else:
-        st.warning("No location data available")
+        st.warning("Нет доступных локаций")
 
 @admin_required
 def render_analytics_tab():
@@ -121,7 +115,7 @@ def render_analytics_tab():
         df_dept = get_cached_employees_by_dept()
         if not df_dept.empty:
             fig = px.pie(df_dept, values='count', names='department', 
-                         title='Employees by Department')
+                         title='Работники по департаменту')
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.info("No department data available")
@@ -130,10 +124,10 @@ def render_analytics_tab():
         df_status = get_cached_candidates_by_status()
         if not df_status.empty:
             fig = px.bar(df_status, x='status', y='count', 
-                         title='Candidates by Status', color='status')
+                         title='Кандидаты по статусу', color='status')
             st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("No candidate status data available")
+            st.info("Нет данных о кандидатах")
     
     df_doc_times = get_cached_doc_processing_times()
     if not df_doc_times.empty:
@@ -141,7 +135,7 @@ def render_analytics_tab():
                      title='Average Document Processing Time (Days)')
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.info("No document processing data available")
+        st.info("Нет докуметнов в процессе")
 
 @admin_required
 def render_documents_tab():
@@ -174,26 +168,23 @@ def render_documents_tab():
     else:
         st.info("No pending documents")
 
-# Main dashboard
-def main():
-    check_auth()
+
+def dash():
+    if not check_auth():
+        check_auth()
+        login()
+
     st.title("HR Analytics Dashboard")
     date_range = setup_sidebar_filters()
     
-    tab1, tab2, tab4 = st.tabs([
+    tab1, tab4 = st.tabs([
         "📍 Employee Locations", 
-        "📊 HR Analytics",
         "📄 Documents"
     ])
     
     with tab1:
         render_locations_tab()
     
-    with tab2:
-        render_analytics_tab()
-    
     with tab4:
         render_documents_tab()
 
-if __name__ == "__main__":
-    main()

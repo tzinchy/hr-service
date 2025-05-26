@@ -46,6 +46,7 @@ class MinioSetting:
 @dataclass
 class TelegramBotSetting: 
     TELEGRAM_TOKEN : str = os.environ.get('TELEGRAM_TOKEN')
+    DOCUMENTS_URL : str = os.environ.get('DOCUMENTS_LINK', 'http://80.74.24.255:8502')
 
 @dataclass
 class GEMINI: 

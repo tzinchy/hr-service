@@ -69,6 +69,17 @@ def send_invitation_email(email: str, invitation_code: str):
                     color: #111827;">
                     {invitation_code}
                 </div>
+                <div style="
+                    background-color: #f3f4f6;
+                    padding: 15px;
+                    border-radius: 6px;
+                    text-align: center;
+                    font-size: 24px;
+                    font-weight: bold;
+                    margin: 20px 0;
+                    color: #111827;">
+                    @dgihrservice_bot
+                </div>
                 <p style="font-size: 14px; color: #6b7280; margin-top: 30px;">
                     С уважением,<br>Ваша команда
                 </p>

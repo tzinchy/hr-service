@@ -10,7 +10,8 @@ from aiogram.types import (
     InlineKeyboardButton,
     ReplyKeyboardMarkup,
     KeyboardButton,
-    BufferedInputFile
+    BufferedInputFile,
+    CallbackQuery
 )
 from datetime import datetime
 from repository.database import get_connection, get_minio_client
@@ -26,6 +27,13 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+print(settings.bot.DOCUMENTS_URL)
+def get_auth_keyboard():
+    """Возвращает клавиатуру с кнопкой авторизации"""
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔑 Авторизоваться", callback_data="require_auth")]
+    ])
 
 async def update_document_in_db(document_id: str, bucket: str, key: str, content_type: str, file_size: int) -> bool:
     """Обновляет информацию о документе в базе данных"""
@@ -69,7 +77,7 @@ async def upload_to_minio(bucket: str, key: str, file_bytes: bytes, content_type
         logger.error(f"Error uploading to MinIO: {e}")
         return False
     
-def generate_doc_link(doc_name: str, base_url: str = "http://80.74.24.255:8502") -> str:
+def generate_doc_link(doc_name: str, base_url: str = settings.bot.DOCUMENTS_URL) -> str:
     """
     Генерирует корректную URL-ссылку для документа
     
@@ -98,6 +106,31 @@ class AuthState(StatesGroup):
 bot = Bot(token=settings.bot.TELEGRAM_TOKEN)
 dp = Dispatcher()
 
+
+@dp.callback_query(F.data == "require_auth")
+async def handle_require_auth(callback: types.CallbackQuery, state: FSMContext):
+    try:
+        logger.info(f"Auth button pressed by {callback.from_user.id}")
+        await callback.message.edit_reply_markup()  # Убираем кнопки
+        
+        if await is_user_authorized(callback.message.chat.id):
+            logger.info(f"User {callback.from_user.id} already authorized")
+            await callback.message.answer("Вы уже авторизованы!")
+            await show_main_menu(callback.message)
+            return
+        
+        logger.info(f"Starting auth process for {callback.from_user.id}")
+        await callback.message.answer(
+            "🔑 Для доступа к системе введите код приглашения, "
+            "который вы получили по email:",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        await state.set_state(AuthState.waiting_for_code)
+        await callback.answer()
+    except Exception as e:
+        logger.error(f"Error in handle_require_auth: {e}")
+        await callback.answer("⚠️ Произошла ошибка при авторизации")
+
 async def get_main_keyboard():
     """Возвращает клавиатуру главного меню"""
     return ReplyKeyboardMarkup(
@@ -122,8 +155,13 @@ async def show_main_menu(message: Message, first_name: str = "", last_name: str 
 @dp.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
     """Обработчик команды /start"""
-    await save_message(message.chat.id, message.text, False)  # Сохраняем исходное сообщение
+    await save_message(message.chat.id, message.text, False)
     await save_message(message.chat.id, f"Пользователь {message.from_user.full_name} запустил бота", True)
+    
+    # Проверяем, авторизован ли пользователь
+    if await is_user_authorized(message.chat.id):
+        await show_main_menu(message)
+        return
     
     await message.answer(
         "🔑 Для доступа к системе введите код приглашения, "
@@ -156,7 +194,7 @@ async def process_invitation_code(message: Message, state: FSMContext):
                 result = cursor.fetchone()
                 
                 if not result:
-                    await message.answer("❌ Неверный код приглашения.")
+                    await message.answer("❌ Неверный код приглашения.\nПопробуй ввести еще раз")
                     return
                 
                 candidate_uuid, first_name, last_name, agreement_accepted, current_status = result
@@ -179,8 +217,7 @@ async def process_invitation_code(message: Message, state: FSMContext):
                         WHERE candidate_uuid = %s
                         """,
                         (candidate_uuid,)
-                    )
-                
+                    )     
                 cursor.execute("""
                     INSERT INTO comm.telegram_chat (
                         chat_id, 
@@ -221,7 +258,7 @@ async def process_invitation_code(message: Message, state: FSMContext):
                     ])
                     
                     await message.answer(
-                        "📄 Пожалуйста, ознакомьтесь с нашей Политикой конфиденциальности...",
+                        """📄 Пожалуйста, ознакомьтесь с нашей Политикой конфиденциальности...\nhttps://clck.ru/3MGdpM""",
                         reply_markup=privacy_kb
                     )
                     await state.set_state(AuthState.waiting_for_privacy_accept)
@@ -259,7 +296,7 @@ async def accept_privacy(callback: types.CallbackQuery, state: FSMContext):
                     await callback.message.answer("⚠️ Возникла ошибка. Пользователь не найден.")
                     await state.clear()
                     return
-                    
+
                 first_name, last_name = result
                 
                 await create_required_documents(candidate_uuid)
@@ -295,6 +332,7 @@ async def decline_privacy(callback: types.CallbackQuery, state: FSMContext):
 # Обработчики документов с callback-кнопками
 @dp.message(Command("docs"))
 @dp.message(F.text == "📁 Мои документы")
+
 async def cmd_docs(message: Message, state: FSMContext):
     """Обработчик команды /docs и кнопки документов"""
     await save_message(message.chat.id, message.text, False)
@@ -372,6 +410,7 @@ async def cmd_docs(message: Message, state: FSMContext):
         await message.answer("⚠️ Произошла ошибка при получении документов.")
 
 @dp.callback_query(F.data.startswith("doc_"))
+
 async def handle_document_callback(callback: types.CallbackQuery, state: FSMContext):
     """Обработка выбора документа"""
     document_id = callback.data.split("_")[1]
@@ -451,6 +490,7 @@ async def handle_document_callback(callback: types.CallbackQuery, state: FSMCont
         await callback.answer("⚠️ Произошла ошибка")
 
 @dp.callback_query(AuthState.document_action, F.data.startswith("upload_"))
+
 async def handle_upload_callback(callback: types.CallbackQuery, state: FSMContext):
     """Обработка загрузки документа"""
     data = await state.get_data()
@@ -468,6 +508,7 @@ async def handle_upload_callback(callback: types.CallbackQuery, state: FSMContex
     await callback.answer()
 
 @dp.callback_query(AuthState.document_action, F.data.startswith("order_"))
+
 async def handle_order_callback(callback: types.CallbackQuery, state: FSMContext):
     """Обработка отметки документа как заказанного"""
     document_id = callback.data.split("_")[1]
@@ -486,6 +527,7 @@ async def handle_order_callback(callback: types.CallbackQuery, state: FSMContext
     await callback.answer()
 
 @dp.callback_query(AuthState.document_action, F.data.startswith("download_"))
+
 async def handle_download_callback(callback: types.CallbackQuery, state: FSMContext):
     """Обработка скачивания документа"""
     document_id = callback.data.split("_")[1]
@@ -559,6 +601,7 @@ async def handle_download_callback(callback: types.CallbackQuery, state: FSMCont
     await callback.answer()
 
 @dp.callback_query(AuthState.document_action, F.data.startswith("request_reupload_"))
+
 async def handle_request_reupload_callback(callback: types.CallbackQuery, state: FSMContext):
     """Обработка запроса новой загрузки документа"""
     document_id = callback.data.split("_")[2]
@@ -589,6 +632,7 @@ async def handle_request_reupload_callback(callback: types.CallbackQuery, state:
     await callback.answer()
 
 @dp.callback_query(F.data == "back_to_docs")
+
 async def handle_back_to_docs(callback: types.CallbackQuery, state: FSMContext):
     """Обработка возврата к списку документов"""
     await state.clear()
@@ -597,6 +641,7 @@ async def handle_back_to_docs(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
 
 @dp.callback_query(F.data == "back_to_menu")
+
 async def handle_back_to_menu(callback: types.CallbackQuery, state: FSMContext):
     """Обработка возврата в главное меню"""
     await state.clear()
@@ -605,6 +650,7 @@ async def handle_back_to_menu(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
 
 @dp.message(AuthState.waiting_for_bank_data, F.document)
+
 async def handle_bank_statement(message: Message, state: FSMContext):
     """Обработка выписки банка"""
     await save_message(message.chat.id, "Пользователь загрузил файл", False)
@@ -688,6 +734,7 @@ async def handle_bank_statement(message: Message, state: FSMContext):
         await state.clear()
 
 @dp.message(AuthState.document_upload, F.document)
+
 async def handle_document_upload(message: Message, state: FSMContext):
     """Обработка загрузки документа"""
     await save_message(message.chat.id, "Пользователь загрузил файл", False)
@@ -760,6 +807,7 @@ async def handle_document_upload(message: Message, state: FSMContext):
 
 # Остальные обработчики
 @dp.message(F.text == "📍 Поделиться геолокацией")
+
 async def request_location(message: Message, state: FSMContext):
     """Запрашивает геолокацию у пользователя"""
     await save_message(message.chat.id, message.text, False)
@@ -779,6 +827,7 @@ async def request_location(message: Message, state: FSMContext):
     await save_message(message.chat.id, "Пользователь запросил отправку геолокации", True)
 
 @dp.message(AuthState.waiting_for_location, F.location)
+
 async def handle_location(message: Message, state: FSMContext):
     """Обрабатывает полученную геолокацию"""
     await save_message(message.chat.id, "Пользователь отправил геолокацию", False)
@@ -826,6 +875,7 @@ async def handle_location(message: Message, state: FSMContext):
         await state.clear()
 
 @dp.message(F.text == "🗺️ Моя геолокация")
+
 async def show_my_location(message: Message):
     """Показывает сохраненную геолокацию пользователя"""
     await save_message(message.chat.id, message.text, False)
@@ -860,7 +910,6 @@ async def show_my_location(message: Message):
                     "🗺️ <b>Ваша сохраненная геолокация</b>\n\n"
                     f"<b>Широта:</b> {lat}\n"
                     f"<b>Долгота:</b> {lon}\n"
-                    f"<b>Точность:</b> {acc if acc else 'не указана'} м\n"
                     f"<b>Обновлено:</b> {created_str}"
                 )
                 
@@ -872,6 +921,7 @@ async def show_my_location(message: Message):
         await message.answer("⚠️ Ошибка при получении геолокации.")
 
 @dp.message(F.text == "👤 Мой профиль")
+
 async def my_profile(message: Message):
     """Показывает профиль пользователя"""
     await save_message(message.chat.id, message.text, False)
@@ -920,6 +970,7 @@ async def my_profile(message: Message):
         await message.answer("⚠️ Ошибка при получении данных профиля.")
 
 @dp.message(F.text == "🆘 Поддержка")
+
 async def support(message: Message):
     """Обработчик кнопки поддержки"""
     await save_message(message.chat.id, message.text, False)
@@ -944,6 +995,7 @@ async def support(message: Message):
     await save_message(chat_id, "Показано меню поддержки", True)
 
 @dp.message(F.text == "✉️ Написать")
+
 async def start_support_message(message: Message, state: FSMContext):
     """Обработчик кнопки начала написания сообщения"""
     await save_message(message.chat.id, message.text, False)
@@ -952,6 +1004,7 @@ async def start_support_message(message: Message, state: FSMContext):
     await save_message(message.chat.id, "Пользователь начал писать сообщение в поддержку", True)
 
 @dp.message(AuthState.waiting_for_support_message)
+
 async def handle_support_message(message: Message, state: FSMContext):
     """Обработка сообщения для поддержки"""
     await save_message(message.chat.id, message.text, False)
@@ -964,6 +1017,7 @@ async def handle_support_message(message: Message, state: FSMContext):
     await save_message(message.chat.id, f"Пользователь отправил сообщение в поддержку: {message.text}", True)
 
 @dp.message(F.text == "↩️ Назад в меню")
+
 async def back_to_menu(message: Message, state: FSMContext):
     """Возврат в главное меню"""
     await save_message(message.chat.id, message.text, False)
@@ -972,9 +1026,20 @@ async def back_to_menu(message: Message, state: FSMContext):
     await save_message(message.chat.id, "Пользователь вернулся в меню", True)
 
 @dp.message()
+
 async def handle_unprocessed_messages(message: Message, state: FSMContext):
     """Обработчик непредусмотренных сообщений"""
     await save_message(message.chat.id, message.text, False)
+    
+    if not await is_user_authorized(message.chat.id):
+        logger.info(f"Showing auth keyboard for unauthorized user {message.from_user.id}")
+        auth_kb = get_auth_keyboard()
+        await message.answer(
+            "🔐 Для использования бота необходимо авторизоваться.",
+            reply_markup=auth_kb
+        )
+        return
+    
     current_state = await state.get_state()
     logger.warning(f"Unhandled message: {message.text}. Current state: {current_state}")
     await message.answer("Извините, я не понял вашего сообщения. Пожалуйста, используйте кнопки меню.")

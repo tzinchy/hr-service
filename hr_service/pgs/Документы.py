@@ -239,15 +239,7 @@ def render_add_template_form():
                         st.error(f"Ошибка при сохранении: {str(e)}")
 
 @admin_required
-def main():
-    st.set_page_config(
-        page_title="База шаблонов документов HR",
-        layout="wide",
-        initial_sidebar_state="expanded",
-        menu_items={
-            'About': "Система управления шаблонами документов v2.0"
-        }
-    )
+def docs():
     
     st.sidebar.title("📂 Управление шаблонами")
     
@@ -299,6 +291,3 @@ def main():
         st.error(f"Ошибка при загрузке данных: {str(e)}")
         st.stop()
 
-
-if __name__ == "__main__":
-    main()
