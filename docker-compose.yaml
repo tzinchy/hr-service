@@ -65,7 +65,7 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
-    command: bash -c "cd /app/hr_service && streamlit run Чат.py --server.port=8501"
+    command: bash -c "cd /app/hr_service && streamlit run main.py --server.port=8501"
     ports:
       - "8501:8501"
     volumes:
