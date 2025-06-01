@@ -332,7 +332,6 @@ async def decline_privacy(callback: types.CallbackQuery, state: FSMContext):
 # Обработчики документов с callback-кнопками
 @dp.message(Command("docs"))
 @dp.message(F.text == "📁 Мои документы")
-
 async def cmd_docs(message: Message, state: FSMContext):
     """Обработчик команды /docs и кнопки документов"""
     await save_message(message.chat.id, message.text, False)
@@ -410,7 +409,6 @@ async def cmd_docs(message: Message, state: FSMContext):
         await message.answer("⚠️ Произошла ошибка при получении документов.")
 
 @dp.callback_query(F.data.startswith("doc_"))
-
 async def handle_document_callback(callback: types.CallbackQuery, state: FSMContext):
     """Обработка выбора документа"""
     document_id = callback.data.split("_")[1]
@@ -457,7 +455,7 @@ async def handle_document_callback(callback: types.CallbackQuery, state: FSMCont
                 
                 if status_id == 4:
                     keyboard.append([InlineKeyboardButton(
-                        text="🔄 Запросить новый вариант", 
+                        text="🔄 Отправить новый вариант", 
                         callback_data=f"request_reupload_{document_id}"
                     )])
                 
@@ -490,7 +488,6 @@ async def handle_document_callback(callback: types.CallbackQuery, state: FSMCont
         await callback.answer("⚠️ Произошла ошибка")
 
 @dp.callback_query(AuthState.document_action, F.data.startswith("upload_"))
-
 async def handle_upload_callback(callback: types.CallbackQuery, state: FSMContext):
     """Обработка загрузки документа"""
     data = await state.get_data()
@@ -508,7 +505,6 @@ async def handle_upload_callback(callback: types.CallbackQuery, state: FSMContex
     await callback.answer()
 
 @dp.callback_query(AuthState.document_action, F.data.startswith("order_"))
-
 async def handle_order_callback(callback: types.CallbackQuery, state: FSMContext):
     """Обработка отметки документа как заказанного"""
     document_id = callback.data.split("_")[1]
@@ -527,7 +523,6 @@ async def handle_order_callback(callback: types.CallbackQuery, state: FSMContext
     await callback.answer()
 
 @dp.callback_query(AuthState.document_action, F.data.startswith("download_"))
-
 async def handle_download_callback(callback: types.CallbackQuery, state: FSMContext):
     """Обработка скачивания документа"""
     document_id = callback.data.split("_")[1]
@@ -601,7 +596,6 @@ async def handle_download_callback(callback: types.CallbackQuery, state: FSMCont
     await callback.answer()
 
 @dp.callback_query(AuthState.document_action, F.data.startswith("request_reupload_"))
-
 async def handle_request_reupload_callback(callback: types.CallbackQuery, state: FSMContext):
     """Обработка запроса новой загрузки документа"""
     document_id = callback.data.split("_")[2]
@@ -632,7 +626,6 @@ async def handle_request_reupload_callback(callback: types.CallbackQuery, state:
     await callback.answer()
 
 @dp.callback_query(F.data == "back_to_docs")
-
 async def handle_back_to_docs(callback: types.CallbackQuery, state: FSMContext):
     """Обработка возврата к списку документов"""
     await state.clear()
@@ -641,7 +634,6 @@ async def handle_back_to_docs(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
 
 @dp.callback_query(F.data == "back_to_menu")
-
 async def handle_back_to_menu(callback: types.CallbackQuery, state: FSMContext):
     """Обработка возврата в главное меню"""
     await state.clear()
@@ -650,7 +642,6 @@ async def handle_back_to_menu(callback: types.CallbackQuery, state: FSMContext):
     await callback.answer()
 
 @dp.message(AuthState.waiting_for_bank_data, F.document)
-
 async def handle_bank_statement(message: Message, state: FSMContext):
     """Обработка выписки банка"""
     await save_message(message.chat.id, "Пользователь загрузил файл", False)
@@ -693,10 +684,22 @@ async def handle_bank_statement(message: Message, state: FSMContext):
             os.remove(file_path)
             return
         
+        # Получаем название документа из шаблона
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT t.name
+                    FROM hr.document_template t
+                    JOIN hr.candidate_document d ON d.template_id = t.template_id
+                    WHERE d.document_id = %s
+                """, (selected_doc['id'],))
+                template_name = cursor.fetchone()[0]
+        
         # Подготовка данных для MinIO
         file_extension = document.file_name.split('.')[-1] if '.' in document.file_name else 'xlsx'
         bucket_name = "candidates"
-        s3_key = f"{candidate_uuid}/{selected_doc['id']}.{file_extension}"
+        # Используем название документа из шаблона вместо document_id
+        s3_key = f"{candidate_uuid}/{template_name.replace(' ', '_')}.{file_extension}"
         content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         
         # Загрузка в MinIO
@@ -734,7 +737,6 @@ async def handle_bank_statement(message: Message, state: FSMContext):
         await state.clear()
 
 @dp.message(AuthState.document_upload, F.document)
-
 async def handle_document_upload(message: Message, state: FSMContext):
     """Обработка загрузки документа"""
     await save_message(message.chat.id, "Пользователь загрузил файл", False)
@@ -770,10 +772,22 @@ async def handle_document_upload(message: Message, state: FSMContext):
             await message.answer("❌ Загруженный файл пуст.")
             return
         
+        # Получаем название документа из шаблона
+        with get_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT t.name
+                    FROM hr.document_template t
+                    JOIN hr.candidate_document d ON d.template_id = t.template_id
+                    WHERE d.document_id = %s
+                """, (selected_doc['id'],))
+                template_name = cursor.fetchone()[0]
+        
         # Подготовка данных для MinIO
         file_extension = document.file_name.split('.')[-1] if '.' in document.file_name else 'bin'
         bucket_name = "candidates"
-        s3_key = f"{candidate_uuid}/{selected_doc['id']}.{file_extension}"
+        # Используем название документа из шаблона вместо document_id
+        s3_key = f"{candidate_uuid}/{template_name.replace(' ', '_')}.{file_extension}"
         content_type = document.mime_type or "application/octet-stream"
         
         # Загрузка в MinIO
@@ -807,7 +821,6 @@ async def handle_document_upload(message: Message, state: FSMContext):
 
 # Остальные обработчики
 @dp.message(F.text == "📍 Поделиться геолокацией")
-
 async def request_location(message: Message, state: FSMContext):
     """Запрашивает геолокацию у пользователя"""
     await save_message(message.chat.id, message.text, False)
@@ -827,7 +840,6 @@ async def request_location(message: Message, state: FSMContext):
     await save_message(message.chat.id, "Пользователь запросил отправку геолокации", True)
 
 @dp.message(AuthState.waiting_for_location, F.location)
-
 async def handle_location(message: Message, state: FSMContext):
     """Обрабатывает полученную геолокацию"""
     await save_message(message.chat.id, "Пользователь отправил геолокацию", False)
@@ -875,7 +887,6 @@ async def handle_location(message: Message, state: FSMContext):
         await state.clear()
 
 @dp.message(F.text == "🗺️ Моя геолокация")
-
 async def show_my_location(message: Message):
     """Показывает сохраненную геолокацию пользователя"""
     await save_message(message.chat.id, message.text, False)
@@ -921,7 +932,6 @@ async def show_my_location(message: Message):
         await message.answer("⚠️ Ошибка при получении геолокации.")
 
 @dp.message(F.text == "👤 Мой профиль")
-
 async def my_profile(message: Message):
     """Показывает профиль пользователя"""
     await save_message(message.chat.id, message.text, False)
@@ -970,7 +980,6 @@ async def my_profile(message: Message):
         await message.answer("⚠️ Ошибка при получении данных профиля.")
 
 @dp.message(F.text == "🆘 Поддержка")
-
 async def support(message: Message):
     """Обработчик кнопки поддержки"""
     await save_message(message.chat.id, message.text, False)
@@ -995,7 +1004,6 @@ async def support(message: Message):
     await save_message(chat_id, "Показано меню поддержки", True)
 
 @dp.message(F.text == "✉️ Написать")
-
 async def start_support_message(message: Message, state: FSMContext):
     """Обработчик кнопки начала написания сообщения"""
     await save_message(message.chat.id, message.text, False)
@@ -1004,7 +1012,6 @@ async def start_support_message(message: Message, state: FSMContext):
     await save_message(message.chat.id, "Пользователь начал писать сообщение в поддержку", True)
 
 @dp.message(AuthState.waiting_for_support_message)
-
 async def handle_support_message(message: Message, state: FSMContext):
     """Обработка сообщения для поддержки"""
     await save_message(message.chat.id, message.text, False)
@@ -1017,7 +1024,6 @@ async def handle_support_message(message: Message, state: FSMContext):
     await save_message(message.chat.id, f"Пользователь отправил сообщение в поддержку: {message.text}", True)
 
 @dp.message(F.text == "↩️ Назад в меню")
-
 async def back_to_menu(message: Message, state: FSMContext):
     """Возврат в главное меню"""
     await save_message(message.chat.id, message.text, False)
@@ -1026,7 +1032,6 @@ async def back_to_menu(message: Message, state: FSMContext):
     await save_message(message.chat.id, "Пользователь вернулся в меню", True)
 
 @dp.message()
-
 async def handle_unprocessed_messages(message: Message, state: FSMContext):
     """Обработчик непредусмотренных сообщений"""
     await save_message(message.chat.id, message.text, False)

@@ -10,8 +10,7 @@ from repository.dashboard_repository import (
     get_documents_by_type_by_status,
     get_employees_by_department,
     get_candidates_by_status,
-    get_document_processing_times,
-    get_candidate_status_history
+    get_document_processing_times
 )
 
 from frontend_auth.auth import check_auth, login, admin_required
@@ -45,10 +44,6 @@ def get_cached_candidates_by_status():
 def get_cached_doc_processing_times():
     return get_document_processing_times()
 
-@st.cache_data(ttl=300, show_spinner="Загружаем историю канидата...")
-def get_cached_candidate_history():
-    return get_candidate_status_history()
-
 # Sidebar filters
 def setup_sidebar_filters():
     st.sidebar.title("Filters")
@@ -59,51 +54,59 @@ def setup_sidebar_filters():
     )
     return date_range
 
-# Tab 1: Employee Locations
-def render_locations_tab():
+@admin_required
+def render_locations_tab(work_type_filter):
     st.header("Employee & Candidate Locations")
     
     df_locations = get_cached_locations()
     
-    if not df_locations.empty:
-        # Map visualization
+    # Применяем фильтр по типу работы
+    if work_type_filter != "Все":
+        filter_map = {
+            "удаленно": [1, 2],
+            "в офисе": [3, 4], 
+            "гибрид": [5, 6]
+        }
+        df_locations = df_locations[
+            (df_locations['work_type_id'].isin(filter_map[work_type_filter])) |
+            (df_locations['type'] == 'candidate')
+        ]
+    
+    # Фильтруем записи с координатами
+    df_to_display = df_locations.dropna(subset=['latitude', 'longitude'])
+    
+    st.write(f"Всего записей: {len(df_locations)}, с координатами: {len(df_to_display)}")
+    
+    if not df_to_display.empty:
+        # Отображаем карту
         st.pydeck_chart(pdk.Deck(
             map_style='mapbox://styles/mapbox/light-v9',
             initial_view_state=pdk.ViewState(
-                latitude=df_locations['latitude'].mean(),
-                longitude=df_locations['longitude'].mean(),
+                latitude=df_to_display['latitude'].mean(),
+                longitude=df_to_display['longitude'].mean(),
                 zoom=10,
                 pitch=50,
             ),
-            layers=[
-                pdk.Layer(
-                    'ScatterplotLayer',
-                    data=df_locations,
-                    get_position='[longitude, latitude]',
-                    get_color='[200, 30, 0, 160]',
-                    get_radius=200,
-                    pickable=True,
-                    auto_highlight=True,
-                ),
-            ],
-            tooltip={
-                "html": "<b>Name:</b> {name}<br/>"
-                        "<b>Type:</b> {type}<br/>"
-                        "<b>Email:</b> {email}<br/>"
-                        "<b>Position:</b> {position}<br/>"
-                        "<b>Department:</b> {department}<br/>"
-                        "<b>Division:</b> {division}",
-                "style": {
-                    "backgroundColor": "steelblue",
-                    "color": "white"
-                }
-            }
+            layers=[pdk.Layer(
+                'ScatterplotLayer',
+                data=df_to_display,
+                get_position='[longitude, latitude]',
+                get_color='[200, 30, 0, 160]',
+                get_radius=200,
+                pickable=True
+            )]
         ))
         
-        # Data table
-        st.dataframe(df_locations)
+        # Отображаем таблицу всех сотрудников (даже без координат)
+        st.subheader("Все сотрудники")
+        st.dataframe(df_locations[['name', 'type', 'work_type_display', 'email']])
+        
+        # Отображаем предупреждение, если есть сотрудники без координат
+        if len(df_locations) > len(df_to_display):
+            missing = len(df_locations) - len(df_to_display)
+            st.warning(f"{missing} сотрудников не отображаются на карте (отсутствуют координаты)")
     else:
-        st.warning("Нет доступных локаций")
+        st.warning("Нет данных для отображения на карте")
 
 @admin_required
 def render_analytics_tab():
@@ -169,13 +172,29 @@ def render_documents_tab():
         st.info("No pending documents")
 
 
+def setup_sidebar_filters():
+    st.sidebar.title("Filters")
+    
+    date_range = st.sidebar.date_input(
+        "Date range",
+        value=[datetime.now() - timedelta(days=30), datetime.now()],
+        max_value=datetime.now()
+    )
+    
+    work_type_filter = st.sidebar.selectbox(
+        "Тип занятости",
+        options=["Все", "удаленно", "в офисе", "гибрид"]
+    )
+
+    return date_range, work_type_filter
+
 def dash():
     if not check_auth():
         check_auth()
         login()
 
     st.title("HR Analytics Dashboard")
-    date_range = setup_sidebar_filters()
+    date_range, work_type_filter = setup_sidebar_filters()  # Get both filters
     
     tab1, tab4 = st.tabs([
         "📍 Employee Locations", 
@@ -183,8 +202,7 @@ def dash():
     ])
     
     with tab1:
-        render_locations_tab()
+        render_locations_tab(work_type_filter)  # Pass the filter
     
     with tab4:
         render_documents_tab()
-

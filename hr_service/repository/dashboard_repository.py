@@ -4,16 +4,58 @@ from repository.database import get_connection
 
 def get_df_locations():
     query = """
+    -- Кандидаты (всегда показываем их локации)
     SELECT 
-    c.candidate_uuid,
-    c.first_name || ' ' || c.last_name as name,
-    c.email,
-    cl.latitude,
-    cl.longitude,
-    'candidate' as type
+        c.candidate_uuid AS uuid,
+        c.first_name || ' ' || c.last_name AS name,
+        c.email,
+        cl.latitude,
+        cl.longitude,
+        'candidate' AS type,
+        'Кандидат' AS work_type_display,
+        NULL::integer AS work_type_id,
+        NULL AS work_range,
+        NULL AS notes
     FROM hr.candidate c
     JOIN hr.candidate_location cl ON c.candidate_uuid = cl.candidate_uuid
-    WHERE c.status_id NOT IN (SELECT status_id FROM hr.candidate_status WHERE is_final = true)
+    WHERE c.status_id NOT IN (
+        SELECT status_id FROM hr.candidate_status WHERE is_final = true
+    )
+
+    UNION ALL
+
+    -- Сотрудники (новая логика отображения)
+    SELECT 
+        u.user_uuid AS uuid,
+        u.first_name || ' ' || u.last_name AS name,
+        u.email,
+        CASE
+            -- Для офисных работников используем офисные координаты
+            WHEN wt.work_type_id IN (3, 4) THEN COALESCE(wt.latitude, 55.749473)
+            -- Для остальных - персональные координаты или ничего
+            ELSE ul.latitude
+        END AS latitude,
+        CASE
+            WHEN wt.work_type_id IN (3, 4) THEN COALESCE(wt.longtitude, 37.537052)
+            ELSE ul.longitude
+        END AS longitude,
+        'employee' AS type,
+        CASE wt.work_type_id
+            WHEN 1 THEN 'Удалённо (8:00-17:00)'
+            WHEN 2 THEN 'Удалённо (9:00-18:00)'
+            WHEN 3 THEN 'В офисе (Москва-Сити)'
+            WHEN 4 THEN 'В офисе (Москва-Сити)'
+            WHEN 5 THEN 'Гибрид (пн, пт - офис)'
+            WHEN 6 THEN 'Гибрид (пн, пт - офис)'
+            ELSE 'Не указано'
+        END AS work_type_display,
+        wt.work_type_id,
+        wt.work_range,
+        wt.notes
+    FROM auth."user" u
+    LEFT JOIN auth.work_type wt ON u.work_type_id = wt.work_type_id
+    LEFT JOIN auth.user_location ul ON u.user_uuid = ul.user_uuid
+    WHERE u.work_type_id IS NOT NULL
     """
     return pd.read_sql(query, get_connection())
 
@@ -91,18 +133,3 @@ def get_document_processing_times():
     """
     return pd.read_sql(query, get_connection())
 
-def get_candidate_status_history():
-    query = """
-    SELECT 
-        c.candidate_uuid,
-        c.first_name || ' ' || c.last_name as name,
-        cs.name as status,
-        csh.changed_at,
-        u.first_name || ' ' || u.last_name as changed_by
-    FROM hr.candidate_status_history csh
-    JOIN hr.candidate c ON csh.candidate_id = c.candidate_uuid
-    JOIN hr.candidate_status cs ON csh.status_id = cs.status_id
-    JOIN auth.user u ON csh.changed_by = u.user_uuid
-    ORDER BY csh.changed_at DESC
-    """
-    return pd.read_sql(query, get_connection())

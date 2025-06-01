@@ -4,7 +4,8 @@ from pgs.Дашборд import dash
 from pgs.Документы import docs 
 from pgs.Кандидаты import candidates 
 from pgs.Чат import chat
-
+from pgs.Архив import render_archived_candidates_page
+from pgs.Сотрудники import render_employees_page
 # Должно быть ПЕРВОЙ и ЕДИНСТВЕННОЙ командой set_page_config во всем приложении
 st.set_page_config(
     layout="wide",
@@ -28,6 +29,8 @@ def get_available_pages():
         if ADMIN_ROLE in user_data.roles_ids:
             pages.insert(0, "📊 Дашборд")
             pages.insert(3, "📄 Документы")
+            pages.insert(4, 'Архив')
+            pages.insert(5, 'Сотрудники')
 
     
     return pages
@@ -49,5 +52,9 @@ elif page == "📄 Документы":
     docs()
 elif page == '📄 Чат':
     chat()
+elif page == 'Архив':
+    render_archived_candidates_page()
+elif page == 'Сотрудники':
+    render_employees_page()
 else:
     candidates()
