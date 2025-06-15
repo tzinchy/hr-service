@@ -29,8 +29,8 @@ def get_available_pages():
         if ADMIN_ROLE in user_data.roles_ids:
             pages.insert(0, "📊 Дашборд")
             pages.insert(3, "📄 Документы")
-            pages.insert(4, '📁Архив')
-            pages.insert(5, '📋Сотрудники')
+            pages.insert(4, '📁 Архив')
+            pages.insert(5, '📋 Сотрудники')
 
     
     return pages
@@ -52,9 +52,9 @@ elif page == "📄 Документы":
     docs()
 elif page == '📄 Чат':
     chat()
-elif page == 'Архив':
+elif page == '📁 Архив':
     render_archived_candidates_page()
-elif page == 'Сотрудники':
+elif page == '📋 Сотрудники':
     render_employees_page()
 else:
     candidates()
