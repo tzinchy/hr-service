@@ -214,7 +214,7 @@ def render_locations_tab(work_type_filter):
             initial_view_state=view_state,
             layers=layers,
             tooltip={
-                "html": "{tooltip}",
+                "html": "Башня око",
                 "style": {
                     "backgroundColor": "#1e1e1e",
                     "color": "white",
