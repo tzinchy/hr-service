@@ -376,21 +376,6 @@ def render_documents_tab():
             else:
                 st.info("Нет данных о статусах документов")
         
-        with col2:
-            df_doc_type = get_cached_documents_by_type()
-            if not df_doc_type.empty:
-                fig = px.bar(
-                    df_doc_type,
-                    x='Тип документа',
-                    y='Количество',
-                    title='Документы по типам',
-                    color='Тип документа',
-                    text='Количество'
-                )
-                st.plotly_chart(fig, use_container_width=True)
-            else:
-                st.info("Нет данных о типах документов")
-        
         st.divider()
         
         st.subheader("Документы, требующие внимания")
