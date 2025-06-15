@@ -6,14 +6,14 @@ def get_df_locations():
     query = """
     -- Кандидаты (всегда показываем их локации)
     SELECT 
-        c.candidate_uuid AS uuid,
+        c.candidate_uuid AS id,
         c.first_name || ' ' || c.last_name AS name,
-        c.email,
-        cl.latitude,
-        cl.longitude,
+        c.email as email,
+        cl.latitude as latitude,
+        cl.longitude as longitude,
         'candidate' AS type,
         'Кандидат' AS work_type_display,
-        NULL::integer AS work_type_id,
+        NULL::integer AS work_type,
         NULL AS work_range,
         NULL AS notes
     FROM hr.candidate c
@@ -26,13 +26,12 @@ def get_df_locations():
 
     -- Сотрудники (новая логика отображения)
     SELECT 
-        u.user_uuid AS uuid,
+        u.user_uuid AS id,
         u.first_name || ' ' || u.last_name AS name,
-        u.email,
+        u.email as email,
         CASE
             -- Для офисных работников используем офисные координаты
             WHEN wt.work_type_id IN (3, 4) THEN COALESCE(wt.latitude, 55.749473)
-            -- Для остальных - персональные координаты или ничего
             ELSE ul.latitude
         END AS latitude,
         CASE
@@ -62,16 +61,15 @@ def get_df_locations():
 def get_pending_docs():
     query = """
     SELECT 
-        c.first_name || ' ' || c.last_name as candidate,
-        dt.name as document_type,
-        cd.submitted_at,
-        cd.status_id,
+        c.first_name || ' ' || c.last_name as candidate_employee,
+        dt.name as doc_type,
+        cd.submitted_at as submitted_at,
         CASE 
-            WHEN cd.approved_at IS NOT NULL THEN 'Approved'
-            WHEN cd.rejection_reason IS NOT NULL THEN 'Rejected'
-            WHEN cd.submitted_at IS NOT NULL THEN 'Pending Review'
-            WHEN cd.is_ordered THEN 'Ordered'
-            ELSE 'Not Submitted'
+            WHEN cd.approved_at IS NOT NULL THEN 'Принят'
+            WHEN cd.rejection_reason IS NOT NULL THEN 'Отклонен'
+            WHEN cd.submitted_at IS NOT NULL THEN 'На рассмотрении'
+            WHEN cd.is_ordered THEN 'Заказан'
+            ELSE 'Не принят'
         END as status,
         cd.updated_at as last_updated
     FROM hr.candidate_document cd
@@ -85,7 +83,7 @@ def get_pending_docs():
 
 def get_documents_by_type():
     query = """
-    SELECT dt.name as document_type, COUNT(cd.document_id) as count
+    SELECT dt.name as doc_type, COUNT(cd.document_id) as count
     FROM hr.candidate_document cd
     JOIN hr.document_template dt ON cd.template_id = dt.template_id
     GROUP BY dt.name
@@ -94,7 +92,7 @@ def get_documents_by_type():
 
 def get_documents_by_type_by_status():
     query = """
-    SELECT ds.status, COUNT(cd.document_id) as count
+    SELECT ds.status as status, COUNT(cd.document_id) as count
     FROM hr.candidate_document cd
     JOIN hr.document_status ds ON cd.status_id = ds.document_status_id
     GROUP BY ds.status
@@ -103,7 +101,7 @@ def get_documents_by_type_by_status():
 
 def get_employees_by_department():
     query = """
-    SELECT d.department, COUNT(u.user_uuid) as count
+    SELECT d.department as department, COUNT(u.user_uuid) as count
     FROM auth.user u
     JOIN auth.position p ON p.position_id = ANY(u.positions_ids)
     JOIN auth.management m ON p.management_id = m.management_id
@@ -123,8 +121,8 @@ def get_candidates_by_status():
 
 def get_document_processing_times():
     query = """
-    SELECT dt.name as document_type, 
-           AVG(EXTRACT(EPOCH FROM (dh.created_at - cd.submitted_at))/86400) as avg_processing_days
+    SELECT dt.name as doc_type, 
+           AVG(EXTRACT(EPOCH FROM (dh.created_at - cd.submitted_at))/86400) as avg_days
     FROM hr.candidate_document cd
     JOIN hr.document_template dt ON cd.template_id = dt.template_id
     JOIN hr.document_history dh ON cd.document_id = dh.document_uuid
@@ -132,4 +130,3 @@ def get_document_processing_times():
     GROUP BY dt.name
     """
     return pd.read_sql(query, get_connection())
-
